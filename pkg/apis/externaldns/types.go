@@ -28,7 +28,7 @@ import (
 
 	"sigs.k8s.io/external-dns/endpoint"
 
-	"github.com/alecthomas/kingpin"
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/sirupsen/logrus"
 
 	"sigs.k8s.io/external-dns/source"
@@ -86,12 +86,15 @@ type Config struct {
 	AWSAssumeRole                      string
 	AWSAssumeRoleExternalID            string
 	AWSBatchChangeSize                 int
+	AWSBatchChangeSizeBytes            int
+	AWSBatchChangeSizeValues           int
 	AWSBatchChangeInterval             time.Duration
 	AWSEvaluateTargetHealth            bool
 	AWSAPIRetries                      int
 	AWSPreferCNAME                     bool
 	AWSZoneCacheDuration               time.Duration
 	AWSSDServiceCleanup                bool
+	AWSZoneMatchParent                 bool
 	AWSDynamoDBRegion                  string
 	AWSDynamoDBTable                   string
 	AzureConfigFile                    string
@@ -135,6 +138,8 @@ type Config struct {
 	OCIConfigFile                      string
 	OCICompartmentOCID                 string
 	OCIAuthInstancePrincipal           bool
+	OCIZoneScope                       string
+	OCIZoneCacheDuration               time.Duration
 	InMemoryZones                      []string
 	OVHEndpoint                        string
 	OVHApiRateLimit                    int
@@ -175,7 +180,7 @@ type Config struct {
 	ResolveServiceLoadBalancerHostname bool
 	RFC2136Host                        string
 	RFC2136Port                        int
-	RFC2136Zone                        string
+	RFC2136Zone                        []string
 	RFC2136Insecure                    bool
 	RFC2136GSSTSIG                     bool
 	RFC2136KerberosRealm               string
@@ -213,6 +218,8 @@ type Config struct {
 	WebhookProviderReadTimeout         time.Duration
 	WebhookProviderWriteTimeout        time.Duration
 	WebhookServer                      bool
+	TraefikDisableLegacy               bool
+	TraefikDisableNew                  bool
 }
 
 var defaultConfig = &Config{
@@ -253,9 +260,12 @@ var defaultConfig = &Config{
 	AlibabaCloudConfigFile:      "/etc/kubernetes/alibaba-cloud.json",
 	AWSZoneType:                 "",
 	AWSZoneTagFilter:            []string{},
+	AWSZoneMatchParent:          false,
 	AWSAssumeRole:               "",
 	AWSAssumeRoleExternalID:     "",
 	AWSBatchChangeSize:          1000,
+	AWSBatchChangeSizeBytes:     32000,
+	AWSBatchChangeSizeValues:    1000,
 	AWSBatchChangeInterval:      time.Second,
 	AWSEvaluateTargetHealth:     true,
 	AWSAPIRetries:               3,
@@ -291,6 +301,8 @@ var defaultConfig = &Config{
 	InfobloxCreatePTR:           false,
 	InfobloxCacheDuration:       0,
 	OCIConfigFile:               "/etc/kubernetes/oci.yaml",
+	OCIZoneScope:                "GLOBAL",
+	OCIZoneCacheDuration:        0 * time.Second,
 	InMemoryZones:               []string{},
 	OVHEndpoint:                 "ovh-eu",
 	OVHApiRateLimit:             20,
@@ -329,7 +341,7 @@ var defaultConfig = &Config{
 	CFPassword:                  "",
 	RFC2136Host:                 "",
 	RFC2136Port:                 0,
-	RFC2136Zone:                 "",
+	RFC2136Zone:                 []string{},
 	RFC2136Insecure:             false,
 	RFC2136GSSTSIG:              false,
 	RFC2136KerberosRealm:        "",
@@ -365,6 +377,8 @@ var defaultConfig = &Config{
 	WebhookProviderReadTimeout:  5 * time.Second,
 	WebhookProviderWriteTimeout: 10 * time.Second,
 	WebhookServer:               false,
+	TraefikDisableLegacy:        false,
+	TraefikDisableNew:           false,
 }
 
 // NewConfig returns new Config object
@@ -452,6 +466,8 @@ func (cfg *Config) ParseFlags(args []string) error {
 	app.Flag("default-targets", "Set globally default host/IP that will apply as a target instead of source addresses. Specify multiple times for multiple targets (optional)").StringsVar(&cfg.DefaultTargets)
 	app.Flag("target-net-filter", "Limit possible targets by a net filter; specify multiple times for multiple possible nets (optional)").StringsVar(&cfg.TargetNetFilter)
 	app.Flag("exclude-target-net", "Exclude target nets (optional)").StringsVar(&cfg.ExcludeTargetNets)
+	app.Flag("traefik-disable-legacy", "Disable listeners on Resources under the traefik.containo.us API Group").Default(strconv.FormatBool(defaultConfig.TraefikDisableLegacy)).BoolVar(&cfg.TraefikDisableLegacy)
+	app.Flag("traefik-disable-new", "Disable listeners on Resources under the traefik.io API Group").Default(strconv.FormatBool(defaultConfig.TraefikDisableNew)).BoolVar(&cfg.TraefikDisableNew)
 
 	// Flags related to providers
 	providers := []string{"akamai", "alibabacloud", "aws", "aws-sd", "azure", "azure-dns", "azure-private-dns", "bluecat", "civo", "cloudflare", "cloudflare-tunnel", "coredns", "designate", "digitalocean", "dnsimple", "dyn", "exoscale", "gandi", "godaddy", "google", "ibmcloud", "infoblox", "inmemory", "linode", "ns1", "oci", "ovh", "pdns", "pihole", "plural", "rcodezero", "rdns", "rfc2136", "safedns", "scaleway", "skydns", "tencentcloud", "transip", "ultradns", "vinyldns", "vultr", "webhook"}
@@ -473,11 +489,14 @@ func (cfg *Config) ParseFlags(args []string) error {
 	app.Flag("aws-assume-role", "When using the AWS API, assume this IAM role. Useful for hosted zones in another AWS account. Specify the full ARN, e.g. `arn:aws:iam::123455567:role/external-dns` (optional)").Default(defaultConfig.AWSAssumeRole).StringVar(&cfg.AWSAssumeRole)
 	app.Flag("aws-assume-role-external-id", "When using the AWS API and assuming a role then specify this external ID` (optional)").Default(defaultConfig.AWSAssumeRoleExternalID).StringVar(&cfg.AWSAssumeRoleExternalID)
 	app.Flag("aws-batch-change-size", "When using the AWS provider, set the maximum number of changes that will be applied in each batch.").Default(strconv.Itoa(defaultConfig.AWSBatchChangeSize)).IntVar(&cfg.AWSBatchChangeSize)
+	app.Flag("aws-batch-change-size-bytes", "When using the AWS provider, set the maximum byte size that will be applied in each batch.").Default(strconv.Itoa(defaultConfig.AWSBatchChangeSizeBytes)).IntVar(&cfg.AWSBatchChangeSizeBytes)
+	app.Flag("aws-batch-change-size-values", "When using the AWS provider, set the maximum total record values that will be applied in each batch.").Default(strconv.Itoa(defaultConfig.AWSBatchChangeSizeValues)).IntVar(&cfg.AWSBatchChangeSizeValues)
 	app.Flag("aws-batch-change-interval", "When using the AWS provider, set the interval between batch changes.").Default(defaultConfig.AWSBatchChangeInterval.String()).DurationVar(&cfg.AWSBatchChangeInterval)
 	app.Flag("aws-evaluate-target-health", "When using the AWS provider, set whether to evaluate the health of a DNS target (default: enabled, disable with --no-aws-evaluate-target-health)").Default(strconv.FormatBool(defaultConfig.AWSEvaluateTargetHealth)).BoolVar(&cfg.AWSEvaluateTargetHealth)
 	app.Flag("aws-api-retries", "When using the AWS API, set the maximum number of retries before giving up.").Default(strconv.Itoa(defaultConfig.AWSAPIRetries)).IntVar(&cfg.AWSAPIRetries)
 	app.Flag("aws-prefer-cname", "When using the AWS provider, prefer using CNAME instead of ALIAS (default: disabled)").BoolVar(&cfg.AWSPreferCNAME)
 	app.Flag("aws-zones-cache-duration", "When using the AWS provider, set the zones list cache TTL (0s to disable).").Default(defaultConfig.AWSZoneCacheDuration.String()).DurationVar(&cfg.AWSZoneCacheDuration)
+	app.Flag("aws-zone-match-parent", "Expand limit possible target by sub-domains (default: disabled)").BoolVar(&cfg.AWSZoneMatchParent)
 	app.Flag("aws-sd-service-cleanup", "When using the AWS CloudMap provider, delete empty Services without endpoints (default: disabled)").BoolVar(&cfg.AWSSDServiceCleanup)
 	app.Flag("azure-config-file", "When using the Azure provider, specify the Azure configuration file (required when --provider=azure)").Default(defaultConfig.AzureConfigFile).StringVar(&cfg.AzureConfigFile)
 	app.Flag("azure-resource-group", "When using the Azure provider, override the Azure resource group to use (required when --provider=azure-private-dns)").Default(defaultConfig.AzureResourceGroup).StringVar(&cfg.AzureResourceGroup)
@@ -523,7 +542,9 @@ func (cfg *Config) ParseFlags(args []string) error {
 	app.Flag("dyn-min-ttl", "Minimal TTL (in seconds) for records. This value will be used if the provided TTL for a service/ingress is lower than this.").IntVar(&cfg.DynMinTTLSeconds)
 	app.Flag("oci-config-file", "When using the OCI provider, specify the OCI configuration file (required when --provider=oci").Default(defaultConfig.OCIConfigFile).StringVar(&cfg.OCIConfigFile)
 	app.Flag("oci-compartment-ocid", "When using the OCI provider, specify the OCID of the OCI compartment containing all managed zones and records.  Required when using OCI IAM instance principal authentication.").StringVar(&cfg.OCICompartmentOCID)
+	app.Flag("oci-zone-scope", "When using OCI provider, filter for zones with this scope (optional, options: GLOBAL, PRIVATE). Defaults to GLOBAL, setting to empty value will target both.").Default(defaultConfig.OCIZoneScope).EnumVar(&cfg.OCIZoneScope, "", "GLOBAL", "PRIVATE")
 	app.Flag("oci-auth-instance-principal", "When using the OCI provider, specify whether OCI IAM instance principal authentication should be used (instead of key-based auth via the OCI config file).").Default(strconv.FormatBool(defaultConfig.OCIAuthInstancePrincipal)).BoolVar(&cfg.OCIAuthInstancePrincipal)
+	app.Flag("oci-zones-cache-duration", "When using the OCI provider, set the zones list cache TTL (0s to disable).").Default(defaultConfig.OCIZoneCacheDuration.String()).DurationVar(&cfg.OCIZoneCacheDuration)
 	app.Flag("rcodezero-txt-encrypt", "When using the Rcodezero provider with txt registry option, set if TXT rrs are encrypted (default: false)").Default(strconv.FormatBool(defaultConfig.RcodezeroTXTEncrypt)).BoolVar(&cfg.RcodezeroTXTEncrypt)
 	app.Flag("inmemory-zone", "Provide a list of pre-configured zones for the inmemory provider; specify multiple times for multiple zones (optional)").Default("").StringsVar(&cfg.InMemoryZones)
 	app.Flag("ovh-endpoint", "When using the OVH provider, specify the endpoint (default: ovh-eu)").Default(defaultConfig.OVHEndpoint).StringVar(&cfg.OVHEndpoint)
@@ -557,7 +578,7 @@ func (cfg *Config) ParseFlags(args []string) error {
 	// Flags related to RFC2136 provider
 	app.Flag("rfc2136-host", "When using the RFC2136 provider, specify the host of the DNS server").Default(defaultConfig.RFC2136Host).StringVar(&cfg.RFC2136Host)
 	app.Flag("rfc2136-port", "When using the RFC2136 provider, specify the port of the DNS server").Default(strconv.Itoa(defaultConfig.RFC2136Port)).IntVar(&cfg.RFC2136Port)
-	app.Flag("rfc2136-zone", "When using the RFC2136 provider, specify the zone entry of the DNS server to use").Default(defaultConfig.RFC2136Zone).StringVar(&cfg.RFC2136Zone)
+	app.Flag("rfc2136-zone", "When using the RFC2136 provider, specify zone entries of the DNS server to use").StringsVar(&cfg.RFC2136Zone)
 	app.Flag("rfc2136-insecure", "When using the RFC2136 provider, specify whether to attach TSIG or not (default: false, requires --rfc2136-tsig-keyname and rfc2136-tsig-secret)").Default(strconv.FormatBool(defaultConfig.RFC2136Insecure)).BoolVar(&cfg.RFC2136Insecure)
 	app.Flag("rfc2136-tsig-keyname", "When using the RFC2136 provider, specify the TSIG key to attached to DNS messages (required when --rfc2136-insecure=false)").Default(defaultConfig.RFC2136TSIGKeyName).StringVar(&cfg.RFC2136TSIGKeyName)
 	app.Flag("rfc2136-tsig-secret", "When using the RFC2136 provider, specify the TSIG (base64) value to attached to DNS messages (required when --rfc2136-insecure=false)").Default(defaultConfig.RFC2136TSIGSecret).StringVar(&cfg.RFC2136TSIGSecret)

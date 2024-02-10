@@ -69,7 +69,7 @@ spec:
     spec:
       containers:
       - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.5
+        image: registry.k8s.io/external-dns/external-dns:v0.14.0
         args:
         - --source=service
         - --domain-filter=example.com       # (optional) limit to only example.com domains.
@@ -79,6 +79,7 @@ spec:
         - --infoblox-wapi-version=2.3.1     # (optional) Infoblox WAPI version. The default is "2.3.1"
         - --infoblox-ssl-verify             # (optional) Use --no-infoblox-ssl-verify to skip server certificate verification.
         - --infoblox-create-ptr             # (optional) Use --infoblox-create-ptr to create a ptr entry in addition to an entry.
+        - --infoblox-view=""                # (optional) DNS view (default: "")
         env:
         - name: EXTERNAL_DNS_INFOBLOX_HTTP_POOL_CONNECTIONS
           value: "10" # (optional) Infoblox WAPI request connection pool size. The default is "10".
@@ -150,7 +151,7 @@ spec:
       serviceAccountName: external-dns
       containers:
       - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.5
+        image: registry.k8s.io/external-dns/external-dns:v0.14.0
         args:
         - --source=service
         - --domain-filter=example.com       # (optional) limit to only example.com domains.
@@ -160,6 +161,7 @@ spec:
         - --infoblox-wapi-version=2.3.1     # (optional) Infoblox WAPI version. The default is "2.3.1"
         - --infoblox-ssl-verify             # (optional) Use --no-infoblox-ssl-verify to skip server certificate verification.
         - --infoblox-create-ptr             # (optional) Use --infoblox-create-ptr to create a ptr entry in addition to an entry.
+        - --infoblox-view=""                # (optional) DNS view (default: "")        
         env:
         - name: EXTERNAL_DNS_INFOBLOX_HTTP_POOL_CONNECTIONS
           value: "10" # (optional) Infoblox WAPI request connection pool size. The default is "10".

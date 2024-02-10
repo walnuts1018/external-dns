@@ -82,6 +82,7 @@ import (
 	"sigs.k8s.io/external-dns/provider/vinyldns"
 	"sigs.k8s.io/external-dns/provider/vultr"
 	"sigs.k8s.io/external-dns/provider/webhook"
+	webhookapi "sigs.k8s.io/external-dns/provider/webhook/api"
 	"sigs.k8s.io/external-dns/registry"
 	"sigs.k8s.io/external-dns/source"
 )
@@ -156,6 +157,8 @@ func main() {
 		OCPRouterName:                  cfg.OCPRouterName,
 		UpdateEvents:                   cfg.UpdateEvents,
 		ResolveLoadBalancerHostname:    cfg.ResolveServiceLoadBalancerHostname,
+		TraefikDisableLegacy:           cfg.TraefikDisableLegacy,
+		TraefikDisableNew:              cfg.TraefikDisableNew,
 	}
 
 	// Lookup all the selected sources by names and pass them the desired configuration.
@@ -227,16 +230,19 @@ func main() {
 	case "aws":
 		p, err = aws.NewAWSProvider(
 			aws.AWSConfig{
-				DomainFilter:         domainFilter,
-				ZoneIDFilter:         zoneIDFilter,
-				ZoneTypeFilter:       zoneTypeFilter,
-				ZoneTagFilter:        zoneTagFilter,
-				BatchChangeSize:      cfg.AWSBatchChangeSize,
-				BatchChangeInterval:  cfg.AWSBatchChangeInterval,
-				EvaluateTargetHealth: cfg.AWSEvaluateTargetHealth,
-				PreferCNAME:          cfg.AWSPreferCNAME,
-				DryRun:               cfg.DryRun,
-				ZoneCacheDuration:    cfg.AWSZoneCacheDuration,
+				DomainFilter:          domainFilter,
+				ZoneIDFilter:          zoneIDFilter,
+				ZoneTypeFilter:        zoneTypeFilter,
+				ZoneTagFilter:         zoneTagFilter,
+				ZoneMatchParent:       cfg.AWSZoneMatchParent,
+				BatchChangeSize:       cfg.AWSBatchChangeSize,
+				BatchChangeSizeBytes:  cfg.AWSBatchChangeSizeBytes,
+				BatchChangeSizeValues: cfg.AWSBatchChangeSizeValues,
+				BatchChangeInterval:   cfg.AWSBatchChangeInterval,
+				EvaluateTargetHealth:  cfg.AWSEvaluateTargetHealth,
+				PreferCNAME:           cfg.AWSPreferCNAME,
+				DryRun:                cfg.DryRun,
+				ZoneCacheDuration:     cfg.AWSZoneCacheDuration,
 			},
 			route53.New(awsSession),
 		)
@@ -363,9 +369,9 @@ func main() {
 		} else {
 			config, err = oci.LoadOCIConfig(cfg.OCIConfigFile)
 		}
-
+		config.ZoneCacheDuration = cfg.OCIZoneCacheDuration
 		if err == nil {
-			p, err = oci.NewOCIProvider(*config, domainFilter, zoneIDFilter, cfg.DryRun)
+			p, err = oci.NewOCIProvider(*config, domainFilter, zoneIDFilter, cfg.OCIZoneScope, cfg.DryRun)
 		}
 	case "rfc2136":
 		p, err = rfc2136.NewRfc2136Provider(cfg.RFC2136Host, cfg.RFC2136Port, cfg.RFC2136Zone, cfg.RFC2136Insecure, cfg.RFC2136TSIGKeyName, cfg.RFC2136TSIGSecret, cfg.RFC2136TSIGSecretAlg, cfg.RFC2136TAXFR, domainFilter, cfg.DryRun, cfg.RFC2136MinTTL, cfg.RFC2136GSSTSIG, cfg.RFC2136KerberosUsername, cfg.RFC2136KerberosPassword, cfg.RFC2136KerberosRealm, cfg.RFC2136BatchChangeSize, nil)
@@ -416,7 +422,7 @@ func main() {
 	}
 
 	if cfg.WebhookServer {
-		webhook.StartHTTPApi(p, nil, cfg.WebhookProviderReadTimeout, cfg.WebhookProviderWriteTimeout, "127.0.0.1:8888")
+		webhookapi.StartHTTPApi(p, nil, cfg.WebhookProviderReadTimeout, cfg.WebhookProviderWriteTimeout, "127.0.0.1:8888")
 		os.Exit(0)
 	}
 

@@ -45,7 +45,7 @@ CONTROLLER_GEN=$(shell which controller-gen)
 endif
 
 golangci-lint:
-	@command -v golangci-lint > /dev/null || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.53.3
+	@command -v golangci-lint > /dev/null || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
 
 # Run the golangci-lint tool
 .PHONY: go-lint
@@ -103,7 +103,10 @@ build/$(BINARY): $(SOURCES)
 build.push/multiarch: ko
 	KO_DOCKER_REPO=${IMAGE} \
     VERSION=${VERSION} \
-    ko build --tags ${VERSION} --platform=${IMG_PLATFORM} --bare --sbom ${IMG_SBOM} --push=${IMG_PUSH} .
+    ko build --tags ${VERSION} --bare --sbom ${IMG_SBOM} \
+      --image-label org.opencontainers.image.source="https://github.com/kubernetes-sigs/external-dns" \
+      --image-label org.opencontainers.image.revision=$(shell git rev-parse HEAD) \
+      --platform=${IMG_PLATFORM}  --push=${IMG_PUSH} .
 
 build.image/multiarch:
 	$(MAKE) IMG_PUSH=false build.push/multiarch

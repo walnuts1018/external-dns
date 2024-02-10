@@ -1046,6 +1046,8 @@ func testTXTRegistryMissingRecordsWithPrefix(t *testing.T) {
 			newEndpointWithOwner("txt.oldformat2.test-zone.example.org", "\"heritage=external-dns,external-dns/owner=owner\"", endpoint.RecordTypeTXT, ""),
 			newEndpointWithOwner("newformat.test-zone.example.org", "foobar.nameserver.com", endpoint.RecordTypeNS, ""),
 			newEndpointWithOwner("txt.ns-newformat.test-zone.example.org", "\"heritage=external-dns,external-dns/owner=owner\"", endpoint.RecordTypeTXT, ""),
+			newEndpointWithOwner("oldformat3.test-zone.example.org", "random", endpoint.RecordTypeTXT, ""),
+			newEndpointWithOwner("txt.oldformat3.test-zone.example.org", "\"heritage=external-dns,external-dns/owner=owner\"", endpoint.RecordTypeTXT, ""),
 			newEndpointWithOwner("txt.newformat.test-zone.example.org", "\"heritage=external-dns,external-dns/owner=owner\"", endpoint.RecordTypeTXT, ""),
 			newEndpointWithOwner("noheritage.test-zone.example.org", "random", endpoint.RecordTypeTXT, ""),
 			newEndpointWithOwner("oldformat-otherowner.test-zone.example.org", "bar.loadbalancer.com", endpoint.RecordTypeA, ""),
@@ -1074,6 +1076,20 @@ func testTXTRegistryMissingRecordsWithPrefix(t *testing.T) {
 			DNSName:    "oldformat2.test-zone.example.org",
 			Targets:    endpoint.Targets{"bar.loadbalancer.com"},
 			RecordType: endpoint.RecordTypeA,
+			Labels: map[string]string{
+				endpoint.OwnerLabelKey: "owner",
+			},
+			ProviderSpecific: []endpoint.ProviderSpecificProperty{
+				{
+					Name:  "txt/force-update",
+					Value: "true",
+				},
+			},
+		},
+		{
+			DNSName:    "oldformat3.test-zone.example.org",
+			Targets:    endpoint.Targets{"random"},
+			RecordType: endpoint.RecordTypeTXT,
 			Labels: map[string]string{
 				endpoint.OwnerLabelKey: "owner",
 			},
@@ -1122,7 +1138,7 @@ func testTXTRegistryMissingRecordsWithPrefix(t *testing.T) {
 		},
 	}
 
-	r, _ := NewTXTRegistry(p, "txt.", "", "owner", time.Hour, "wc", []string{endpoint.RecordTypeCNAME, endpoint.RecordTypeA, endpoint.RecordTypeNS}, []string{}, false, nil)
+	r, _ := NewTXTRegistry(p, "txt.", "", "owner", time.Hour, "wc", []string{endpoint.RecordTypeCNAME, endpoint.RecordTypeA, endpoint.RecordTypeNS, endpoint.RecordTypeTXT}, []string{}, false, nil)
 	records, _ := r.Records(ctx)
 
 	assert.True(t, testutils.SameEndpoints(records, expectedRecords))
@@ -1525,6 +1541,47 @@ func TestFailGenerateTXT(t *testing.T) {
 	r, _ := NewTXTRegistry(p, "", "", "owner", time.Hour, "", []string{}, []string{}, false, nil)
 	gotTXT := r.generateTXTRecord(cnameRecord)
 	assert.Equal(t, expectedTXT, gotTXT)
+}
+
+func TestTXTRegistryApplyChangesEncrypt(t *testing.T) {
+	p := inmemory.NewInMemoryProvider()
+	p.CreateZone(testZone)
+	ctxEndpoints := []*endpoint.Endpoint{}
+	ctx := context.WithValue(context.Background(), provider.RecordsContextKey, ctxEndpoints)
+
+	p.ApplyChanges(ctx, &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			newEndpointWithOwner("foobar.test-zone.example.org", "foobar.loadbalancer.com", endpoint.RecordTypeCNAME, ""),
+			newEndpointWithOwnerAndOwnedRecord("txt.cname-foobar.test-zone.example.org", "\"h8UQ6jelUFUsEIn7SbFktc2MYXPx/q8lySqI4VwfVtVaIbb2nkHWV/88KKbuLtu7fJNzMir8ELVeVnRSY01KdiIuj7ledqZe5ailEjQaU5Z6uEKd5pgs6sH8\"", endpoint.RecordTypeTXT, "", "foobar.test-zone.example.org"),
+		},
+	})
+
+	r, _ := NewTXTRegistry(p, "txt.", "", "owner", time.Hour, "", []string{}, []string{}, true, []byte("12345678901234567890123456789012"))
+	records, _ := r.Records(ctx)
+	changes := &plan.Changes{
+		Delete: records,
+	}
+
+	// ensure that encryption nonce gets reused when deleting records
+	expected := &plan.Changes{
+		Delete: []*endpoint.Endpoint{
+			newEndpointWithOwner("foobar.test-zone.example.org", "foobar.loadbalancer.com", endpoint.RecordTypeCNAME, "owner"),
+			newEndpointWithOwnerAndOwnedRecord("txt.cname-foobar.test-zone.example.org", "\"h8UQ6jelUFUsEIn7SbFktc2MYXPx/q8lySqI4VwfVtVaIbb2nkHWV/88KKbuLtu7fJNzMir8ELVeVnRSY01KdiIuj7ledqZe5ailEjQaU5Z6uEKd5pgs6sH8\"", endpoint.RecordTypeTXT, "", "foobar.test-zone.example.org"),
+		},
+	}
+
+	p.OnApplyChanges = func(ctx context.Context, got *plan.Changes) {
+		mExpected := map[string][]*endpoint.Endpoint{
+			"Delete": expected.Delete,
+		}
+		mGot := map[string][]*endpoint.Endpoint{
+			"Delete": got.Delete,
+		}
+		assert.True(t, testutils.SamePlanChanges(mGot, mExpected))
+		assert.Equal(t, nil, ctx.Value(provider.RecordsContextKey))
+	}
+	err := r.ApplyChanges(ctx, changes)
+	require.NoError(t, err)
 }
 
 // TestMultiClusterDifferentRecordTypeOwnership validates the registry handles environments where the same zone is managed by

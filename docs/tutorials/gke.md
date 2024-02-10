@@ -76,7 +76,7 @@ ExternalDNS will need permissions to make changes to the Cloud DNS zone. There a
 
 * [Worker Node Service Account](#worker-node-service-account)
 * [Static Credentials](#static-credentials)
-* [Work Load Identity](#work-load-identity)
+* [Workload Identity](#workload-identity)
 
 ### Setup Cloud DNS and GKE
 
@@ -319,7 +319,7 @@ spec:
       serviceAccountName: external-dns
       containers:
         - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.13.5
+          image: registry.k8s.io/external-dns/external-dns:v0.14.0
           args:
             - --source=service
             - --source=ingress

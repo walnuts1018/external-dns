@@ -194,6 +194,18 @@ Here is the full list of available metrics provided by ExternalDNS:
 | external_dns_source_a_records                            | Number of A records in source                                      | Gauge   |
 
 
+If you're using the webhook provider, the following additional metrics will be provided:
+
+| Name                                                         | Description                                            | Type    |
+| ------------------------------------------------------------ | ------------------------------------------------------ | ------- |
+| external_dns_webhook_provider_records_errors_total           | Number of errors with the /records method              | Gauge   |
+| external_dns_webhook_provider_records_requests_total         | Number of requests made to the /records method         | Gauge   |
+| external_dns_webhook_provider_applychanges_errors_total      | Number of errors with the /applychanges method         | Gauge   |
+| external_dns_webhook_provider_applychanges_requests_total    | Number of requests made to the /applychanges method    | Gauge   |
+| external_dns_webhook_provider_adjustendpoints_errors_total   | Number of errors with the /adjustendpoints method      | Gauge   |
+| external_dns_webhook_provider_adjustendpoints_requests_total | Number of requests made to the /adjustendpoints method | Gauge   |
+
+
 ### How can I run ExternalDNS under a specific GCP Service Account, e.g. to access DNS records in other projects?
 
 Have a look at https://github.com/linki/mate/blob/v0.6.2/examples/google/README.md#permissions
@@ -209,7 +221,7 @@ $ docker run \
   -e EXTERNAL_DNS_SOURCE=$'service\ningress' \
   -e EXTERNAL_DNS_PROVIDER=google \
   -e EXTERNAL_DNS_DOMAIN_FILTER=$'foo.com\nbar.com' \
-  registry.k8s.io/external-dns/external-dns:v0.13.5
+  registry.k8s.io/external-dns/external-dns:v0.14.0
 time="2017-08-08T14:10:26Z" level=info msg="config: &{APIServerURL: KubeConfig: Sources:[service ingress] Namespace: ...
 ```
 
