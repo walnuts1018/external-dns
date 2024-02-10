@@ -59,7 +59,7 @@ The Azure DNS provider expects, by default, that the configuration file is at `/
 
 ## Permissions to modify DNS zone
 
-ExternalDNS needs permissions to make changes to the Azure DNS zone. There are three ways configure the access needed:
+ExternalDNS needs permissions to make changes to the Azure DNS zone. There are four ways configure the access needed:
 
 - [Service Principal](#service-principal)
 - [Managed Identity Using AKS Kubelet Identity](#managed-identity-using-aks-kubelet-identity)
@@ -127,7 +127,7 @@ $ kubectl create secret generic azure-config-file --namespace "default" --from-f
 
 ### Managed identity using AKS Kubelet identity
 
-The [managed identity](https://docs.microsoft.com/azure/active-directory/managed-identities-azure-resources/overview) that is assigned to the underlying node pool in the AKS cluster can be given permissions to access Azure DNS.  Managed identities are essentially a service principal whose lifecycle is managed, such as deleting the AKS cluster will also delete the service principals associated with the AKS cluster.  The managed identity assigned Kuberetes node pool, or specifically the [VMSS](https://docs.microsoft.com/azure/virtual-machine-scale-sets/overview), is called the Kubelet identity.
+The [managed identity](https://docs.microsoft.com/azure/active-directory/managed-identities-azure-resources/overview) that is assigned to the underlying node pool in the AKS cluster can be given permissions to access Azure DNS.  Managed identities are essentially a service principal whose lifecycle is managed, such as deleting the AKS cluster will also delete the service principals associated with the AKS cluster.  The managed identity assigned Kubernetes node pool, or specifically the [VMSS](https://docs.microsoft.com/azure/virtual-machine-scale-sets/overview), is called the Kubelet identity.
 
 The managed identites were previously called MSI (Managed Service Identity) and are enabled by default when creating an AKS cluster.
 
@@ -140,28 +140,31 @@ For the managed identity, the contents of `azure.json` should be similar to this
   "tenantId": "01234abc-de56-ff78-abc1-234567890def",
   "subscriptionId": "01234abc-de56-ff78-abc1-234567890def",
   "resourceGroup": "MyDnsResourceGroup",
-  "useManagedIdentityExtension": true
+  "useManagedIdentityExtension": true,
+  "userAssignedIdentityID": "01234abc-de56-ff78-abc1-234567890def"
 }
 ```
 
 #### Fetching the Kubelet identity
 
-For this process, you will need to get the kublet identity:
+For this process, you will need to get the kubelet identity:
 
 ```bash
 $ PRINCIPAL_ID=$(az aks show --resource-group $CLUSTER_GROUP --name $CLUSTERNAME \
   --query "identityProfile.kubeletidentity.objectId" --output tsv)
+$ IDENTITY_CLIENT_ID=$(az aks show --resource-group $CLUSTER_GROUP --name $CLUSTERNAME \
+  --query "identityProfile.kubeletidentity.clientId" --output tsv)
 ```
 
 #### Assign rights for the Kubelet identity
 
-Grant access to Azure DNS zone for the kublet identity.
+Grant access to Azure DNS zone for the kubelet identity.
 
 ```bash
 $ AZURE_DNS_ZONE="example.com" # DNS zone name like example.com or sub.example.com
 $ AZURE_DNS_ZONE_RESOURCE_GROUP="MyDnsResourceGroup" # resource group where DNS zone is hosted
 
-# fetch DNS id used to grant access to the kublet identity
+# fetch DNS id used to grant access to the kubelet identity
 $ DNS_ID=$(az network dns zone show --name $AZURE_DNS_ZONE \
   --resource-group $AZURE_DNS_ZONE_RESOURCE_GROUP --query "id" --output tsv)
 
@@ -178,7 +181,8 @@ cat <<-EOF > /local/path/to/azure.json
   "tenantId": "$(az account show --query tenantId -o tsv)",
   "subscriptionId": "$(az account show --query id -o tsv)",
   "resourceGroup": "$AZURE_DNS_ZONE_RESOURCE_GROUP",
-  "useManagedIdentityExtension": true
+  "useManagedIdentityExtension": true,
+  "userAssignedIdentityID": "$IDENTITY_CLIENT_ID"
 }
 EOF
 ```
@@ -284,7 +288,7 @@ $ az aks pod-identity add --resource-group ${AZURE_AKS_RESOURCE_GROUP}  \
   --name "external-dns" --identity-resource-id ${IDENTITY_RESOURCE_ID}
 ```
 
-This will add something similar to the following resouces:
+This will add something similar to the following resources:
 
 ```yaml
 apiVersion: aadpodidentity.k8s.io/v1
@@ -382,32 +386,52 @@ $ az identity federated-credential create --name ${IDENTITY_NAME} --identity-nam
 
 NOTE: make sure federated credential refers to correct namespace and service account (`system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>`)
 
-#### helm
+#### Helm
 
-When deploying external-dns with helm, here are the parameters you need to pass:
+When deploying external-dns with Helm you need to create a secret to store the Azure config (see below) and create a workload identity (out of scope here) before you can install the chart.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: external-dns-azure
+type: Opaque
+data:
+  azure.json: |
+    {
+      "tenantId": "<TENANT_ID>",
+      "subscriptionId": "<SUBSCRIPTION_ID>",
+      "resourceGroup": "<AZURE_DNS_ZONE_RESOURCE_GROUP>",
+      "useWorkloadIdentityExtension": true
+    }
+```
+
+Once you have created the secret and have a workload identity you can install the chart with the following values.
 
 ```yaml
 fullnameOverride: external-dns
 
 serviceAccount:
+  labels:
+    azure.workload.identity/use: "true"
   annotations:
     azure.workload.identity/client-id: <IDENTITY_CLIENT_ID>
 
 podLabels:
   azure.workload.identity/use: "true"
 
-provider: azure
+extraVolumes:
+  - name: azure-config-file
+    secret:
+      secretName: external-dns-azure
 
-secretConfiguration:
-  enabled: true
-  mountPath: "/etc/kubernetes/"
-  data:
-    azure.json: |
-      {
-        "subscriptionId": "<SUBSCRIPTION_ID>",
-        "resourceGroup": "<AZURE_DNS_ZONE_RESOURCE_GROUP>",
-        "useWorkloadIdentityExtension": true
-      }
+extraVolumeMounts:
+  - name: azure-config-file
+    mountPath: /etc/kubernetes
+    readOnly: true
+
+provider:
+  name: azure
 ```
 
 NOTE: make sure the pod is restarted whenever you make a configuration change.
@@ -447,7 +471,7 @@ $ kubectl patch deployment external-dns --namespace "default" --patch \
  '{"spec": {"template": {"metadata": {"labels": {\"azure.workload.identity/use\": \"true\"}}}}}'
 ```
 
-NOTE: it's also possible to specify (or override) ClientID through `UserAssignedIdentityID` field in `azure.json`.
+NOTE: it's also possible to specify (or override) ClientID through `userAssignedIdentityID` field in `azure.json`.
 
 NOTE: make sure the pod is restarted whenever you make a configuration change.
 
@@ -488,7 +512,7 @@ spec:
     spec:
       containers:
       - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.5
+        image: registry.k8s.io/external-dns/external-dns:v0.14.0
         args:
         - --source=service
         - --source=ingress
@@ -556,7 +580,7 @@ spec:
       serviceAccountName: external-dns
       containers:
         - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.13.5
+          image: registry.k8s.io/external-dns/external-dns:v0.14.0
           args:
             - --source=service
             - --source=ingress
@@ -627,7 +651,7 @@ spec:
       serviceAccountName: external-dns
       containers:
         - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.13.5
+          image: registry.k8s.io/external-dns/external-dns:v0.14.0
           args:
             - --source=service
             - --source=ingress
@@ -783,6 +807,6 @@ $ az group delete --name "MyDnsResourceGroup"
 
 ## More tutorials
 
-A video explanantion is available here: https://www.youtube.com/watch?v=VSn6DPKIhM8&list=PLpbcUe4chE79sB7Jg7B4z3HytqUUEwcNE
+A video explanation is available here: https://www.youtube.com/watch?v=VSn6DPKIhM8&list=PLpbcUe4chE79sB7Jg7B4z3HytqUUEwcNE
 
 ![image](https://user-images.githubusercontent.com/6548359/235437721-87611869-75f2-4f32-bb35-9da585e46299.png)

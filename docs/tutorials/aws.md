@@ -236,7 +236,7 @@ Follow the steps under [Deploy ExternalDNS](#deploy-externaldns) using either RB
 
 This is the preferred method as it implements [PoLP](https://csrc.nist.gov/glossary/term/principle_of_least_privilege) ([Principal of Least Privilege](https://csrc.nist.gov/glossary/term/principle_of_least_privilege)).
 
-**IMPORTANT**: This method requires using KSA (Kuberntes service account) and RBAC.
+**IMPORTANT**: This method requires using KSA (Kubernetes service account) and RBAC.
 
 This method requires deploying with RBAC.  See [Manifest (for clusters with RBAC enabled)](#manifest-for-clusters-with-rbac-enabled) when ready to deploy ExternalDNS.
 
@@ -329,7 +329,7 @@ kubectl patch serviceaccount "external-dns" --namespace ${EXTERNALDNS_NS:-"defau
  "{\"metadata\": { \"annotations\": { \"eks.amazonaws.com/role-arn\": \"$ROLE_ARN\" }}}"
 ```
 
-If any part of this step is misconfigured, such as the role with incorrect namespace configured in the trust relationship, annotation pointing the the wrong role, etc., you will see errors like `WebIdentityErr: failed to retrieve credentials`. Check the configuration and make corrections.  
+If any part of this step is misconfigured, such as the role with incorrect namespace configured in the trust relationship, annotation pointing the the wrong role, etc., you will see errors like `WebIdentityErr: failed to retrieve credentials`. Check the configuration and make corrections.
 
 When the service account annotations are updated, then the current running pods will have to be terminated, so that new pod(s) with proper configuration (environment variables) will be created automatically.
 
@@ -414,7 +414,7 @@ spec:
     spec:
       containers:
         - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.13.5
+          image: registry.k8s.io/external-dns/external-dns:v0.14.0
           args:
             - --source=service
             - --source=ingress
@@ -509,7 +509,7 @@ spec:
       serviceAccountName: external-dns
       containers:
         - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.13.5
+          image: registry.k8s.io/external-dns/external-dns:v0.14.0
           args:
             - --source=service
             - --source=ingress
@@ -561,6 +561,15 @@ Annotations which are specific to AWS.
 ### target-hosted-zone
 
 `external-dns.alpha.kubernetes.io/aws-target-hosted-zone` can optionally be set to the ID of a Route53 hosted zone. This will force external-dns to use the specified hosted zone when creating an ALIAS target.
+
+### aws-zone-match-parent
+`aws-zone-match-parent` allows support subdomains within the same zone by using their parent domain, i.e --domain-filter=x.example.com would create a DNS entry for x.example.com (and subdomains thereof).
+
+```yaml
+## hosted zone domain: example.com
+--domain-filter=x.example.com,example.com
+--aws-zone-match-parent
+```
 
 ## Verify ExternalDNS works (Service example)
 
@@ -962,7 +971,7 @@ A simple way to implement randomised startup is with an init container:
     spec:
       initContainers:
       - name: init-jitter
-        image: registry.k8s.io/external-dns/external-dns:v0.13.5
+        image: registry.k8s.io/external-dns/external-dns:v0.14.0
         command:
         - /bin/sh
         - -c
@@ -982,3 +991,19 @@ An effective starting point for EKS with an ingress controller might look like:
 --domain-filter=example.com
 --aws-zones-cache-duration=1h
 ```
+
+### Batch size options
+
+After external-dns generates all changes, it will perform a task to group those changes into batches. Each change will be validated against batch-change-size limits. If at least one of those parameters out of range - the change will be moved to a separate batch. If the change can't fit into any batch - *it will be skipped.*<br>
+There are 3 options to control batch size for AWS provider:
+* Maximum amount of changes added to one batch
+  * `--aws-batch-change-size` (default `1000`)
+* Maximum size of changes in bytes added to one batch
+  * `--aws-batch-change-size-bytes` (default `32000`)
+* Maximum value count of changes added to one batch
+  * `aws-batch-change-size-values` (default `1000`)
+
+`aws-batch-change-size` can be very useful for throttling purposes and can be set to any value.
+
+Default values for flags `aws-batch-change-size-bytes` and `aws-batch-change-size-values` are taken from [AWS documentation](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/DNSLimitations.html#limits-api-requests) for Route53 API. **You should not change those values until you really have to.** <br>
+Because those limits are in place, `aws-batch-change-size` can be set to any value: Even if your batch size is `4000` records, your change will be split to separate batches due to bytes/values size limits and apply request will be finished without issues.

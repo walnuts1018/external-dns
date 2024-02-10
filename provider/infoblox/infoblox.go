@@ -26,11 +26,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/StackExchange/dnscontrol/v3/pkg/transform"
 	ibclient "github.com/infobloxopen/infoblox-go-client/v2"
 	"github.com/sirupsen/logrus"
 
 	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/pkg/rfc2317"
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 )
@@ -215,28 +215,28 @@ func (p *ProviderConfig) Records(ctx context.Context) (endpoints []*endpoint.End
 			// Check if endpoint already exists and add to existing endpoint if it does
 			foundExisting := false
 			for _, ep := range endpoints {
-				if ep.DNSName == res.Name && ep.RecordType == endpoint.RecordTypeA {
+				if ep.DNSName == *res.Name && ep.RecordType == endpoint.RecordTypeA {
 					foundExisting = true
 					duplicateTarget := false
 
 					for _, t := range ep.Targets {
-						if t == res.Ipv4Addr {
+						if t == *res.Ipv4Addr {
 							duplicateTarget = true
 							break
 						}
 					}
 
 					if duplicateTarget {
-						logrus.Debugf("A duplicate target '%s' found for existing A record '%s'", res.Ipv4Addr, ep.DNSName)
+						logrus.Debugf("A duplicate target '%s' found for existing A record '%s'", *res.Ipv4Addr, ep.DNSName)
 					} else {
-						logrus.Debugf("Adding target '%s' to existing A record '%s'", res.Ipv4Addr, res.Name)
-						ep.Targets = append(ep.Targets, res.Ipv4Addr)
+						logrus.Debugf("Adding target '%s' to existing A record '%s'", *res.Ipv4Addr, *res.Name)
+						ep.Targets = append(ep.Targets, *res.Ipv4Addr)
 					}
 					break
 				}
 			}
 			if !foundExisting {
-				newEndpoint := endpoint.NewEndpoint(res.Name, endpoint.RecordTypeA, res.Ipv4Addr)
+				newEndpoint := endpoint.NewEndpoint(*res.Name, endpoint.RecordTypeA, *res.Ipv4Addr)
 				if p.createPTR {
 					newEndpoint.WithProviderSpecific(providerSpecificInfobloxPtrRecord, "true")
 				}
@@ -257,11 +257,11 @@ func (p *ProviderConfig) Records(ctx context.Context) (endpoints []*endpoint.End
 		}
 		for _, res := range resH {
 			for _, ip := range res.Ipv4Addrs {
-				logrus.Debugf("Record='%s' A(H):'%s'", res.Name, ip.Ipv4Addr)
+				logrus.Debugf("Record='%s' A(H):'%s'", *res.Name, *ip.Ipv4Addr)
 
 				// host record is an abstraction in infoblox that combines A and PTR records
 				// for any host record we already should have a PTR record in infoblox, so mark it as created
-				newEndpoint := endpoint.NewEndpoint(res.Name, endpoint.RecordTypeA, ip.Ipv4Addr)
+				newEndpoint := endpoint.NewEndpoint(*res.Name, endpoint.RecordTypeA, *ip.Ipv4Addr)
 				if p.createPTR {
 					newEndpoint.WithProviderSpecific(providerSpecificInfobloxPtrRecord, "true")
 				}
@@ -276,15 +276,15 @@ func (p *ProviderConfig) Records(ctx context.Context) (endpoints []*endpoint.End
 			return nil, fmt.Errorf("could not fetch CNAME records from zone '%s': %w", zone.Fqdn, err)
 		}
 		for _, res := range resC {
-			logrus.Debugf("Record='%s' CNAME:'%s'", res.Name, res.Canonical)
-			endpoints = append(endpoints, endpoint.NewEndpoint(res.Name, endpoint.RecordTypeCNAME, res.Canonical))
+			logrus.Debugf("Record='%s' CNAME:'%s'", *res.Name, *res.Canonical)
+			endpoints = append(endpoints, endpoint.NewEndpoint(*res.Name, endpoint.RecordTypeCNAME, *res.Canonical))
 		}
 
 		if p.createPTR {
 			// infoblox doesn't accept reverse zone's fqdn, and instead expects .in-addr.arpa zone
 			// so convert our zone fqdn (if it is a correct cidr block) into in-addr.arpa address and pass that into infoblox
 			// example: 10.196.38.0/24 becomes 38.196.10.in-addr.arpa
-			arpaZone, err := transform.ReverseDomainName(zone.Fqdn)
+			arpaZone, err := rfc2317.CidrToInAddr(zone.Fqdn)
 			if err == nil {
 				var resP []ibclient.RecordPTR
 				objP := ibclient.NewEmptyRecordPTR()
@@ -293,7 +293,7 @@ func (p *ProviderConfig) Records(ctx context.Context) (endpoints []*endpoint.End
 					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
 				}
 				for _, res := range resP {
-					endpoints = append(endpoints, endpoint.NewEndpoint(res.PtrdName, endpoint.RecordTypePTR, res.Ipv4Addr))
+					endpoints = append(endpoints, endpoint.NewEndpoint(*res.PtrdName, endpoint.RecordTypePTR, *res.Ipv4Addr))
 				}
 			}
 		}
@@ -307,36 +307,37 @@ func (p *ProviderConfig) Records(ctx context.Context) (endpoints []*endpoint.End
 		for _, res := range resT {
 			// The Infoblox API strips enclosing double quotes from TXT records lacking whitespace.
 			// Unhandled, the missing double quotes would break the extractOwnerID method of the registry package.
-			if _, err := strconv.Unquote(res.Text); err != nil {
-				res.Text = strconv.Quote(res.Text)
+			if _, err := strconv.Unquote(*res.Text); err != nil {
+				quoted := strconv.Quote(*res.Text)
+				res.Text = &quoted
 			}
 
 			foundExisting := false
 
 			for _, ep := range endpoints {
-				if ep.DNSName == res.Name && ep.RecordType == endpoint.RecordTypeTXT {
+				if ep.DNSName == *res.Name && ep.RecordType == endpoint.RecordTypeTXT {
 					foundExisting = true
 					duplicateTarget := false
 
 					for _, t := range ep.Targets {
-						if t == res.Text {
+						if t == *res.Text {
 							duplicateTarget = true
 							break
 						}
 					}
 
 					if duplicateTarget {
-						logrus.Debugf("A duplicate target '%s' found for existing TXT record '%s'", res.Text, ep.DNSName)
+						logrus.Debugf("A duplicate target '%s' found for existing TXT record '%s'", *res.Text, ep.DNSName)
 					} else {
-						logrus.Debugf("Adding target '%s' to existing TXT record '%s'", res.Text, res.Name)
-						ep.Targets = append(ep.Targets, res.Text)
+						logrus.Debugf("Adding target '%s' to existing TXT record '%s'", *res.Text, *res.Name)
+						ep.Targets = append(ep.Targets, *res.Text)
 					}
 					break
 				}
 			}
 			if !foundExisting {
-				logrus.Debugf("Record='%s' TXT:'%s'", res.Name, res.Text)
-				newEndpoint := endpoint.NewEndpoint(res.Name, endpoint.RecordTypeTXT, res.Text)
+				logrus.Debugf("Record='%s' TXT:'%s'", *res.Name, *res.Text)
+				newEndpoint := endpoint.NewEndpoint(*res.Name, endpoint.RecordTypeTXT, *res.Text)
 				endpoints = append(endpoints, newEndpoint)
 			}
 		}
@@ -376,14 +377,14 @@ func (p *ProviderConfig) Records(ctx context.Context) (endpoints []*endpoint.End
 	return endpoints, nil
 }
 
-func (p *ProviderConfig) AdjustEndpoints(endpoints []*endpoint.Endpoint) []*endpoint.Endpoint {
+func (p *ProviderConfig) AdjustEndpoints(endpoints []*endpoint.Endpoint) ([]*endpoint.Endpoint, error) {
 	// Update user specified TTL (0 == disabled)
 	for i := range endpoints {
 		endpoints[i].RecordTTL = endpoint.TTL(p.cacheDuration)
 	}
 
 	if !p.createPTR {
-		return endpoints
+		return endpoints, nil
 	}
 
 	// for all A records, we want to create PTR records
@@ -403,7 +404,7 @@ func (p *ProviderConfig) AdjustEndpoints(endpoints []*endpoint.Endpoint) []*endp
 		}
 	}
 
-	return endpoints
+	return endpoints, nil
 }
 
 // ApplyChanges applies the given changes.
@@ -532,11 +533,11 @@ func (p *ProviderConfig) recordSet(ep *endpoint.Endpoint, getObject bool, target
 	case endpoint.RecordTypeA:
 		var res []ibclient.RecordA
 		obj := ibclient.NewEmptyRecordA()
-		obj.Name = ep.DNSName
-		obj.Ipv4Addr = ep.Targets[targetIndex]
+		obj.Name = &ep.DNSName
+		obj.Ipv4Addr = &ep.Targets[targetIndex]
 		obj.View = p.view
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.Name})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
@@ -549,11 +550,11 @@ func (p *ProviderConfig) recordSet(ep *endpoint.Endpoint, getObject bool, target
 	case endpoint.RecordTypePTR:
 		var res []ibclient.RecordPTR
 		obj := ibclient.NewEmptyRecordPTR()
-		obj.PtrdName = ep.DNSName
-		obj.Ipv4Addr = ep.Targets[targetIndex]
+		obj.PtrdName = &ep.DNSName
+		obj.Ipv4Addr = &ep.Targets[targetIndex]
 		obj.View = p.view
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.PtrdName})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.PtrdName})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
@@ -566,11 +567,11 @@ func (p *ProviderConfig) recordSet(ep *endpoint.Endpoint, getObject bool, target
 	case endpoint.RecordTypeCNAME:
 		var res []ibclient.RecordCNAME
 		obj := ibclient.NewEmptyRecordCNAME()
-		obj.Name = ep.DNSName
-		obj.Canonical = ep.Targets[0]
-		obj.View = p.view
+		obj.Name = &ep.DNSName
+		obj.Canonical = &ep.Targets[0]
+		obj.View = &p.view
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.Name})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
@@ -588,11 +589,11 @@ func (p *ProviderConfig) recordSet(ep *endpoint.Endpoint, getObject bool, target
 			ep.Targets = endpoint.Targets{target}
 		}
 		obj := ibclient.NewEmptyRecordTXT()
-		obj.Name = ep.DNSName
-		obj.Text = ep.Targets[0]
-		obj.View = p.view
+		obj.Name = &ep.DNSName
+		obj.Text = &ep.Targets[0]
+		obj.View = &p.view
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.Name})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
@@ -679,36 +680,36 @@ func (p *ProviderConfig) deleteRecords(deleted infobloxChangeMap) {
 				case endpoint.RecordTypeA:
 					for _, record := range *recordSet.res.(*[]ibclient.RecordA) {
 						if p.dryRun {
-							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "A", record.Name, record.Ipv4Addr, record.Zone)
+							logrus.Infof("Would delete %s record named '%p' to '%p' for Infoblox DNS zone '%s'.", "A", record.Name, record.Ipv4Addr, record.Zone)
 						} else {
-							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "A", record.Name, record.Ipv4Addr, record.Zone)
+							logrus.Infof("Deleting %s record named '%p' to '%p' for Infoblox DNS zone '%s'.", "A", record.Name, record.Ipv4Addr, record.Zone)
 							_, err = p.client.DeleteObject(record.Ref)
 						}
 					}
 				case endpoint.RecordTypePTR:
 					for _, record := range *recordSet.res.(*[]ibclient.RecordPTR) {
 						if p.dryRun {
-							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "PTR", record.PtrdName, record.Ipv4Addr, record.Zone)
+							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "PTR", *record.PtrdName, *record.Ipv4Addr, record.Zone)
 						} else {
-							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "PTR", record.PtrdName, record.Ipv4Addr, record.Zone)
+							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "PTR", *record.PtrdName, *record.Ipv4Addr, record.Zone)
 							_, err = p.client.DeleteObject(record.Ref)
 						}
 					}
 				case endpoint.RecordTypeCNAME:
 					for _, record := range *recordSet.res.(*[]ibclient.RecordCNAME) {
 						if p.dryRun {
-							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "CNAME", record.Name, record.Canonical, record.Zone)
+							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "CNAME", *record.Name, *record.Canonical, record.Zone)
 						} else {
-							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "CNAME", record.Name, record.Canonical, record.Zone)
+							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "CNAME", *record.Name, *record.Canonical, record.Zone)
 							_, err = p.client.DeleteObject(record.Ref)
 						}
 					}
 				case endpoint.RecordTypeTXT:
 					for _, record := range *recordSet.res.(*[]ibclient.RecordTXT) {
 						if p.dryRun {
-							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "TXT", record.Name, record.Text, record.Zone)
+							logrus.Infof("Would delete %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "TXT", *record.Name, *record.Text, record.Zone)
 						} else {
-							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "TXT", record.Name, record.Text, record.Zone)
+							logrus.Infof("Deleting %s record named '%s' to '%s' for Infoblox DNS zone '%s'.", "TXT", *record.Name, *record.Text, record.Zone)
 							_, err = p.client.DeleteObject(record.Ref)
 						}
 					}

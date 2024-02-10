@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -70,6 +72,14 @@ var (
 			Subsystem: "controller",
 			Name:      "last_sync_timestamp_seconds",
 			Help:      "Timestamp of last successful sync with the DNS provider",
+		},
+	)
+	lastReconcileTimestamp = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "external_dns",
+			Subsystem: "controller",
+			Name:      "last_reconcile_timestamp_seconds",
+			Help:      "Timestamp of last attempted sync with the DNS provider",
 		},
 	)
 	controllerNoChangesTotal = prometheus.NewCounter(
@@ -150,6 +160,7 @@ func init() {
 	prometheus.MustRegister(sourceEndpointsTotal)
 	prometheus.MustRegister(registryEndpointsTotal)
 	prometheus.MustRegister(lastSyncTimestamp)
+	prometheus.MustRegister(lastReconcileTimestamp)
 	prometheus.MustRegister(deprecatedRegistryErrors)
 	prometheus.MustRegister(deprecatedSourceErrors)
 	prometheus.MustRegister(controllerNoChangesTotal)
@@ -180,14 +191,18 @@ type Controller struct {
 	nextRunAt time.Time
 	// The nextRunAtMux is for atomic updating of nextRunAt
 	nextRunAtMux sync.Mutex
-	// DNS record types that will be considered for management
+	// MangedRecordTypes are DNS record types that will be considered for management.
 	ManagedRecordTypes []string
+	// ExcludeRecordTypes are DNS record types that will be excluded from management.
+	ExcludeRecordTypes []string
 	// MinEventSyncInterval is used as window for batching events
 	MinEventSyncInterval time.Duration
 }
 
 // RunOnce runs a single iteration of a reconciliation loop.
 func (c *Controller) RunOnce(ctx context.Context) error {
+	lastReconcileTimestamp.SetToCurrentTime()
+
 	records, err := c.Registry.Records(ctx)
 	if err != nil {
 		registryErrorsTotal.Inc()
@@ -214,7 +229,10 @@ func (c *Controller) RunOnce(ctx context.Context) error {
 	vARecords, vAAAARecords := countMatchingAddressRecords(endpoints, records)
 	verifiedARecords.Set(float64(vARecords))
 	verifiedAAAARecords.Set(float64(vAAAARecords))
-	endpoints = c.Registry.AdjustEndpoints(endpoints)
+	endpoints, err = c.Registry.AdjustEndpoints(endpoints)
+	if err != nil {
+		return fmt.Errorf("adjusting endpoints: %w", err)
+	}
 	registryFilter := c.Registry.GetDomainFilter()
 
 	plan := &plan.Plan{
@@ -223,6 +241,8 @@ func (c *Controller) RunOnce(ctx context.Context) error {
 		Desired:        endpoints,
 		DomainFilter:   endpoint.MatchAllDomainFilters{&c.DomainFilter, &registryFilter},
 		ManagedRecords: c.ManagedRecordTypes,
+		ExcludeRecords: c.ExcludeRecordTypes,
+		OwnerID:        c.Registry.OwnerID(),
 	}
 
 	plan = plan.Calculate()
@@ -240,6 +260,7 @@ func (c *Controller) RunOnce(ctx context.Context) error {
 	}
 
 	lastSyncTimestamp.SetToCurrentTime()
+
 	return nil
 }
 
@@ -311,7 +332,11 @@ func (c *Controller) Run(ctx context.Context) {
 	for {
 		if c.ShouldRunOnce(time.Now()) {
 			if err := c.RunOnce(ctx); err != nil {
-				log.Fatal(err)
+				if errors.Is(err, provider.SoftError) {
+					log.Errorf("Failed to do run once: %v", err)
+				} else {
+					log.Fatalf("Failed to do run once: %v", err)
+				}
 			}
 		}
 		select {

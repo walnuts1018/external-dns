@@ -67,13 +67,15 @@ type Config struct {
 	CFAPIEndpoint                  string
 	CFUsername                     string
 	CFPassword                     string
-	GlooNamespace                  string
+	GlooNamespaces                 []string
 	SkipperRouteGroupVersion       string
 	RequestTimeout                 time.Duration
 	DefaultTargets                 []string
 	OCPRouterName                  string
 	UpdateEvents                   bool
 	ResolveLoadBalancerHostname    bool
+	TraefikDisableLegacy           bool
+	TraefikDisableNew              bool
 }
 
 // ClientGenerator provides clients
@@ -210,7 +212,7 @@ func BuildWithConfig(ctx context.Context, source string, p ClientGenerator, cfg 
 		if err != nil {
 			return nil, err
 		}
-		return NewNodeSource(ctx, client, cfg.AnnotationFilter, cfg.FQDNTemplate)
+		return NewNodeSource(ctx, client, cfg.AnnotationFilter, cfg.FQDNTemplate, cfg.LabelFilter)
 	case "service":
 		client, err := p.KubeClient()
 		if err != nil {
@@ -290,7 +292,7 @@ func BuildWithConfig(ctx context.Context, source string, p ClientGenerator, cfg 
 		if err != nil {
 			return nil, err
 		}
-		return NewGlooSource(dynamicClient, kubernetesClient, cfg.GlooNamespace)
+		return NewGlooSource(dynamicClient, kubernetesClient, cfg.GlooNamespaces)
 	case "traefik-proxy":
 		kubernetesClient, err := p.KubeClient()
 		if err != nil {
@@ -300,7 +302,7 @@ func BuildWithConfig(ctx context.Context, source string, p ClientGenerator, cfg 
 		if err != nil {
 			return nil, err
 		}
-		return NewTraefikSource(ctx, dynamicClient, kubernetesClient, cfg.Namespace, cfg.AnnotationFilter)
+		return NewTraefikSource(ctx, dynamicClient, kubernetesClient, cfg.Namespace, cfg.AnnotationFilter, cfg.IgnoreHostnameAnnotation, cfg.TraefikDisableLegacy, cfg.TraefikDisableNew)
 	case "openshift-route":
 		ocpClient, err := p.OpenShiftClient()
 		if err != nil {
@@ -341,7 +343,7 @@ func BuildWithConfig(ctx context.Context, source string, p ClientGenerator, cfg 
 		if err != nil {
 			return nil, err
 		}
-		return NewKongTCPIngressSource(ctx, dynamicClient, kubernetesClient, cfg.Namespace, cfg.AnnotationFilter)
+		return NewKongTCPIngressSource(ctx, dynamicClient, kubernetesClient, cfg.Namespace, cfg.AnnotationFilter, cfg.IgnoreHostnameAnnotation)
 	case "f5-virtualserver":
 		kubernetesClient, err := p.KubeClient()
 		if err != nil {

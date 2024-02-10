@@ -38,31 +38,31 @@ import (
 func TestDynamoDBRegistryNew(t *testing.T) {
 	api, p := newDynamoDBAPIStub(t, nil)
 
-	_, err := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "", []string{}, []byte(""), time.Hour)
+	_, err := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "", []string{}, []string{}, []byte(""), time.Hour)
 	require.NoError(t, err)
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "testPrefix", "", "", []string{}, []byte(""), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "testPrefix", "", "", []string{}, []string{}, []byte(""), time.Hour)
 	require.NoError(t, err)
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "testSuffix", "", []string{}, []byte(""), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "testSuffix", "", []string{}, []string{}, []byte(""), time.Hour)
 	require.NoError(t, err)
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "testWildcard", []string{}, []byte(""), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "testWildcard", []string{}, []string{}, []byte(""), time.Hour)
 	require.NoError(t, err)
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "testWildcard", []string{}, []byte(";k&l)nUC/33:{?d{3)54+,AD?]SX%yh^"), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "testWildcard", []string{}, []string{}, []byte(";k&l)nUC/33:{?d{3)54+,AD?]SX%yh^"), time.Hour)
 	require.NoError(t, err)
 
-	_, err = NewDynamoDBRegistry(p, "", api, "test-table", "", "", "", []string{}, []byte(""), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "", api, "test-table", "", "", "", []string{}, []string{}, []byte(""), time.Hour)
 	require.EqualError(t, err, "owner id cannot be empty")
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "", "", "", "", []string{}, []byte(""), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "", "", "", "", []string{}, []string{}, []byte(""), time.Hour)
 	require.EqualError(t, err, "table cannot be empty")
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "", []string{}, []byte(";k&l)nUC/33:{?d{3)54+,AD?]SX%yh^x"), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "", []string{}, []string{}, []byte(";k&l)nUC/33:{?d{3)54+,AD?]SX%yh^x"), time.Hour)
 	require.EqualError(t, err, "the AES Encryption key must have a length of 32 bytes")
 
-	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "testPrefix", "testSuffix", "", []string{}, []byte(""), time.Hour)
+	_, err = NewDynamoDBRegistry(p, "test-owner", api, "test-table", "testPrefix", "testSuffix", "", []string{}, []string{}, []byte(""), time.Hour)
 	require.EqualError(t, err, "txt-prefix and txt-suffix are mutually exclusive")
 }
 
@@ -112,7 +112,7 @@ func TestDynamoDBRegistryRecordsBadTable(t *testing.T) {
 			api, p := newDynamoDBAPIStub(t, nil)
 			tc.setup(&api.tableDescription)
 
-			r, _ := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "", []string{}, nil, time.Hour)
+			r, _ := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "", "", "", []string{}, []string{}, nil, time.Hour)
 
 			_, err := r.Records(context.Background())
 			assert.EqualError(t, err, tc.expected)
@@ -198,7 +198,7 @@ func TestDynamoDBRegistryRecords(t *testing.T) {
 		},
 	}
 
-	r, _ := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "txt.", "", "", []string{}, nil, time.Hour)
+	r, _ := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "txt.", "", "", []string{}, []string{}, nil, time.Hour)
 	_ = p.(*wrappedProvider).Provider.ApplyChanges(context.Background(), &plan.Changes{
 		Create: []*endpoint.Endpoint{
 			endpoint.NewEndpoint("migrate.test-zone.example.org", endpoint.RecordTypeA, "3.3.3.3").WithSetIdentifier("set-3"),
@@ -217,6 +217,7 @@ func TestDynamoDBRegistryRecords(t *testing.T) {
 func TestDynamoDBRegistryApplyChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
+		maxBatchSize    uint8
 		stubConfig      DynamoDBStubConfig
 		addRecords      []*endpoint.Endpoint
 		changes         plan.Changes
@@ -290,6 +291,118 @@ func TestDynamoDBRegistryApplyChanges(t *testing.T) {
 					Labels: map[string]string{
 						endpoint.OwnerLabelKey:    "test-owner",
 						endpoint.ResourceLabelKey: "ingress/default/new-ingress",
+					},
+				},
+			},
+		},
+		{
+			name:         "create more entries than DynamoDB batch size limit",
+			maxBatchSize: 2,
+			changes: plan.Changes{
+				Create: []*endpoint.Endpoint{
+					{
+						DNSName:       "new1.test-zone.example.org",
+						Targets:       endpoint.Targets{"new1.loadbalancer.com"},
+						RecordType:    endpoint.RecordTypeCNAME,
+						SetIdentifier: "set-new",
+						Labels: map[string]string{
+							endpoint.ResourceLabelKey: "ingress/default/new1-ingress",
+						},
+					},
+					{
+						DNSName:       "new2.test-zone.example.org",
+						Targets:       endpoint.Targets{"new2.loadbalancer.com"},
+						RecordType:    endpoint.RecordTypeCNAME,
+						SetIdentifier: "set-new",
+						Labels: map[string]string{
+							endpoint.ResourceLabelKey: "ingress/default/new2-ingress",
+						},
+					},
+					{
+						DNSName:       "new3.test-zone.example.org",
+						Targets:       endpoint.Targets{"new3.loadbalancer.com"},
+						RecordType:    endpoint.RecordTypeCNAME,
+						SetIdentifier: "set-new",
+						Labels: map[string]string{
+							endpoint.ResourceLabelKey: "ingress/default/new3-ingress",
+						},
+					},
+				},
+			},
+			stubConfig: DynamoDBStubConfig{
+				ExpectInsert: map[string]map[string]string{
+					"new1.test-zone.example.org#CNAME#set-new": {endpoint.ResourceLabelKey: "ingress/default/new1-ingress"},
+					"new2.test-zone.example.org#CNAME#set-new": {endpoint.ResourceLabelKey: "ingress/default/new2-ingress"},
+					"new3.test-zone.example.org#CNAME#set-new": {endpoint.ResourceLabelKey: "ingress/default/new3-ingress"},
+				},
+				ExpectDelete: sets.New("quux.test-zone.example.org#A#set-2"),
+			},
+			expectedRecords: []*endpoint.Endpoint{
+				{
+					DNSName:    "foo.test-zone.example.org",
+					Targets:    endpoint.Targets{"foo.loadbalancer.com"},
+					RecordType: endpoint.RecordTypeCNAME,
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey: "",
+					},
+				},
+				{
+					DNSName:    "bar.test-zone.example.org",
+					Targets:    endpoint.Targets{"my-domain.com"},
+					RecordType: endpoint.RecordTypeCNAME,
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey:    "test-owner",
+						endpoint.ResourceLabelKey: "ingress/default/my-ingress",
+					},
+				},
+				{
+					DNSName:       "baz.test-zone.example.org",
+					Targets:       endpoint.Targets{"1.1.1.1"},
+					RecordType:    endpoint.RecordTypeA,
+					SetIdentifier: "set-1",
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey:    "test-owner",
+						endpoint.ResourceLabelKey: "ingress/default/my-ingress",
+					},
+				},
+				{
+					DNSName:       "baz.test-zone.example.org",
+					Targets:       endpoint.Targets{"2.2.2.2"},
+					RecordType:    endpoint.RecordTypeA,
+					SetIdentifier: "set-2",
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey:    "test-owner",
+						endpoint.ResourceLabelKey: "ingress/default/other-ingress",
+					},
+				},
+				{
+					DNSName:       "new1.test-zone.example.org",
+					Targets:       endpoint.Targets{"new1.loadbalancer.com"},
+					RecordType:    endpoint.RecordTypeCNAME,
+					SetIdentifier: "set-new",
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey:    "test-owner",
+						endpoint.ResourceLabelKey: "ingress/default/new1-ingress",
+					},
+				},
+				{
+					DNSName:       "new2.test-zone.example.org",
+					Targets:       endpoint.Targets{"new2.loadbalancer.com"},
+					RecordType:    endpoint.RecordTypeCNAME,
+					SetIdentifier: "set-new",
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey:    "test-owner",
+						endpoint.ResourceLabelKey: "ingress/default/new2-ingress",
+					},
+				},
+				{
+					DNSName:       "new3.test-zone.example.org",
+					Targets:       endpoint.Targets{"new3.loadbalancer.com"},
+					RecordType:    endpoint.RecordTypeCNAME,
+					SetIdentifier: "set-new",
+					Labels: map[string]string{
+						endpoint.OwnerLabelKey:    "test-owner",
+						endpoint.ResourceLabelKey: "ingress/default/new3-ingress",
 					},
 				},
 			},
@@ -911,6 +1024,11 @@ func TestDynamoDBRegistryApplyChanges(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			originalMaxBatchSize := dynamodbMaxBatchSize
+			if tc.maxBatchSize > 0 {
+				dynamodbMaxBatchSize = tc.maxBatchSize
+			}
+
 			api, p := newDynamoDBAPIStub(t, &tc.stubConfig)
 			if len(tc.addRecords) > 0 {
 				_ = p.(*wrappedProvider).Provider.ApplyChanges(context.Background(), &plan.Changes{
@@ -920,7 +1038,7 @@ func TestDynamoDBRegistryApplyChanges(t *testing.T) {
 
 			ctx := context.Background()
 
-			r, _ := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "txt.", "", "", []string{}, nil, time.Hour)
+			r, _ := NewDynamoDBRegistry(p, "test-owner", api, "test-table", "txt.", "", "", []string{}, []string{}, nil, time.Hour)
 			_, err := r.Records(ctx)
 			require.Nil(t, err)
 
@@ -945,6 +1063,8 @@ func TestDynamoDBRegistryApplyChanges(t *testing.T) {
 			if tc.expectedError == "" {
 				assert.Empty(t, r.orphanedLabels)
 			}
+
+			dynamodbMaxBatchSize = originalMaxBatchSize
 		})
 	}
 }
