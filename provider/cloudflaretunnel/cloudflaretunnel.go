@@ -11,11 +11,26 @@ import (
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
+	"sigs.k8s.io/external-dns/provider/cloudflaretunnel/util"
 )
+
+type CloudFlareAPIClient interface {
+	GetTunnelConfiguration(context.Context, *cloudflare.ResourceContainer, string) (cloudflare.TunnelConfigurationResult, error)
+	UpdateTunnelConfiguration(context.Context, *cloudflare.ResourceContainer, cloudflare.TunnelConfigurationParams) (cloudflare.TunnelConfigurationResult, error)
+	UserDetails(ctx context.Context) (cloudflare.User, error)
+	ZoneIDByName(zoneName string) (string, error)
+	ListZones(ctx context.Context, zoneID ...string) ([]cloudflare.Zone, error)
+	ListZonesContext(ctx context.Context, opts ...cloudflare.ReqOption) (cloudflare.ZonesResponse, error)
+	ZoneDetails(ctx context.Context, zoneID string) (cloudflare.Zone, error)
+	ListDNSRecords(ctx context.Context, rc *cloudflare.ResourceContainer, rp cloudflare.ListDNSRecordsParams) ([]cloudflare.DNSRecord, *cloudflare.ResultInfo, error)
+	CreateDNSRecord(ctx context.Context, rc *cloudflare.ResourceContainer, rp cloudflare.CreateDNSRecordParams) (cloudflare.DNSRecord, error)
+	DeleteDNSRecord(ctx context.Context, rc *cloudflare.ResourceContainer, recordID string) error
+	UpdateDNSRecord(ctx context.Context, rc *cloudflare.ResourceContainer, rp cloudflare.UpdateDNSRecordParams) (cloudflare.DNSRecord, error)
+}
 
 type CloudFlareTunnelProvider struct {
 	provider.BaseProvider
-	Client            *cloudflare.API
+	Client            CloudFlareAPIClient
 	domainFilter      endpoint.DomainFilter
 	DryRun            bool
 	accountId         string
@@ -30,7 +45,7 @@ var defaultOriginRequestConfig = cloudflare.OriginRequestConfig{
 	Http2Origin: boolPtr(true),
 }
 
-func NewCloudFlareTunnelProvider(domainFilter endpoint.DomainFilter, zoneIDFilter provider.ZoneIDFilter, dryRun bool, dnsRecordsPerPage int) (*CloudFlareTunnelProvider, error) {
+func NewCloudFlareAPIClient() (CloudFlareAPIClient, error) {
 	var (
 		client *cloudflare.API
 		err    error
@@ -55,6 +70,10 @@ func NewCloudFlareTunnelProvider(domainFilter endpoint.DomainFilter, zoneIDFilte
 			return nil, fmt.Errorf("failed to initialize cloudflare provider: %v", err)
 		}
 	}
+	return client, nil
+}
+
+func NewCloudFlareTunnelProvider(client CloudFlareAPIClient, domainFilter endpoint.DomainFilter, zoneIDFilter provider.ZoneIDFilter, dryRun bool, dnsRecordsPerPage int) (*CloudFlareTunnelProvider, error) {
 
 	accountId, ok := os.LookupEnv("CF_ACCOUNT_ID")
 	if !ok {
@@ -86,7 +105,7 @@ func (p *CloudFlareTunnelProvider) Records(ctx context.Context) ([]*endpoint.End
 
 	endpoints := []*endpoint.Endpoint{}
 	for _, config := range configResult.Config.Ingress {
-		endpoint := endpoint.NewEndpoint(config.Hostname, "A", config.Service)
+		endpoint := endpoint.NewEndpoint(config.Hostname, endpoint.RecordTypeA, config.Service)
 		endpoints = append(endpoints, endpoint)
 		log.Info(fmt.Sprintf("current endpoint: %v", endpoint))
 	}
@@ -104,66 +123,59 @@ func (p *CloudFlareTunnelProvider) ApplyChanges(ctx context.Context, changes *pl
 		return fmt.Errorf("failed to get tunnel configs: %v", err)
 	}
 
-	ingresses := make(map[string]cloudflare.UnvalidatedIngressRule)
+	ingressConfigs := util.NewOrderedMap(len(oldConfigResult.Config.Ingress))
 	var catchAll cloudflare.UnvalidatedIngressRule
+
 	for _, v := range oldConfigResult.Config.Ingress {
 		if v.Hostname == "" {
 			catchAll = v
 			break
 		}
-		ingresses[v.Hostname] = v
+		ingressConfigs.Add(v)
 	}
 
-	param := cloudflare.TunnelConfigurationParams{TunnelID: p.tunnelId, Config: oldConfigResult.Config}
-	param.Config.Ingress = []cloudflare.UnvalidatedIngressRule{}
-
-	for _, endpoint := range changes.Create {
-		if endpoint.RecordType != "A" {
+	dnsCreateParams := make([]cloudflare.CreateDNSRecordParams, 0, len(changes.Create))
+	for _, createEndpoint := range changes.Create {
+		if createEndpoint.RecordType != endpoint.RecordTypeA {
 			continue
 		}
-		ingresses[endpoint.DNSName] = cloudflare.UnvalidatedIngressRule{
-			Hostname:      endpoint.DNSName,
-			Service:       convertHttps(endpoint.Targets[0]),
+		ingressConfigs.Add(cloudflare.UnvalidatedIngressRule{
+			Hostname:      createEndpoint.DNSName,
+			Service:       convertHttps(createEndpoint.Targets[0]),
 			OriginRequest: &defaultOriginRequestConfig,
-		}
+		})
 
-		zoneID, _ := p.zoneNameIDMapper.FindZone(endpoint.DNSName)
+		zoneID, _ := p.zoneNameIDMapper.FindZone(createEndpoint.DNSName)
 		if zoneID == "" {
 			fmt.Println("zoneid is empty. skipping...")
 			continue
 		}
 
-		params := cloudflare.CreateDNSRecordParams{
-			Name:    endpoint.DNSName,
+		dnsCreateParams = append(dnsCreateParams, cloudflare.CreateDNSRecordParams{
+			Name:    createEndpoint.DNSName,
 			TTL:     1, // auto
 			Proxied: boolPtr(true),
-			Type:    "CNAME",
+			Type:    endpoint.RecordTypeCNAME,
 			Content: fmt.Sprintf("%v.cfargotunnel.com", p.tunnelId),
-		}
-		_, err := p.Client.CreateDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), params)
-		if err != nil {
-			fmt.Printf("failed to create dns record: %v\n", err)
-			continue
-		}
-		log.Info("successfully create record: ", endpoint.DNSName)
+			ZoneID:  zoneID,
+		})
 	}
 
-	for i, desired := range changes.UpdateNew {
-		if desired.RecordType != "A" {
+	type dnsUpdateParam struct {
+		ZoneID string
+		cfup   cloudflare.UpdateDNSRecordParams
+	}
+	dnsUpdateParams := make([]dnsUpdateParam, 0, len(changes.UpdateNew))
+	for _, desired := range changes.UpdateNew {
+		if desired.RecordType != endpoint.RecordTypeA {
 			continue
 		}
 
-		current := changes.UpdateOld[i]
-		if !(ingresses[desired.DNSName].Hostname == current.DNSName && ingresses[desired.DNSName].Service == current.Targets[0]) {
-			log.Println("failed to update dns")
-			continue
-		}
-
-		ingresses[desired.DNSName] = cloudflare.UnvalidatedIngressRule{
+		ingressConfigs.Update(cloudflare.UnvalidatedIngressRule{
 			Hostname:      desired.DNSName,
 			Service:       convertHttps(desired.Targets[0]),
 			OriginRequest: &defaultOriginRequestConfig,
-		}
+		})
 
 		zoneID, _ := p.zoneNameIDMapper.FindZone(desired.DNSName)
 		if zoneID == "" {
@@ -177,28 +189,38 @@ func (p *CloudFlareTunnelProvider) ApplyChanges(ctx context.Context, changes *pl
 		}
 		recordID := p.getRecordID(records, cloudflare.DNSRecord{
 			Name:    desired.DNSName,
-			Type:    "CNAME",
+			Type:    endpoint.RecordTypeCNAME,
 			Content: desired.Targets[0],
+			ZoneID:  zoneID,
 		})
 
-		params := cloudflare.UpdateDNSRecordParams{
-			ID: recordID,
-		}
-		_, err = p.Client.UpdateDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), params)
-		if err != nil {
-			fmt.Printf("failed to update dns record: %v\n", err)
-			continue
-		}
-		log.Info("successfully update record: ", desired.DNSName)
+		dnsUpdateParams = append(dnsUpdateParams, dnsUpdateParam{
+			ZoneID: zoneID,
+			cfup: cloudflare.UpdateDNSRecordParams{
+				ID:      recordID,
+				Name:    desired.DNSName,
+				TTL:     1, // auto
+				Proxied: boolPtr(true),
+				Type:    endpoint.RecordTypeCNAME,
+				Content: fmt.Sprintf("%v.cfargotunnel.com", p.tunnelId),
+			},
+		})
 	}
 
-	for _, endpoint := range changes.Delete {
-		if endpoint.RecordType != "A" {
+	type dnsDeleteParam struct {
+		ZoneID   string
+		recordID string
+	}
+	dnsDeleteParams := make([]dnsDeleteParam, 0, len(changes.Delete))
+	for _, deleteEndpoint := range changes.Delete {
+		if deleteEndpoint.RecordType != endpoint.RecordTypeA {
 			continue
 		}
-		delete(ingresses, endpoint.DNSName)
+		ingressConfigs.Remove(cloudflare.UnvalidatedIngressRule{
+			Hostname: deleteEndpoint.DNSName,
+		})
 
-		zoneID, _ := p.zoneNameIDMapper.FindZone(endpoint.DNSName)
+		zoneID, _ := p.zoneNameIDMapper.FindZone(deleteEndpoint.DNSName)
 		if zoneID == "" {
 			fmt.Println("zoneid is empty. skipping...")
 			continue
@@ -208,34 +230,61 @@ func (p *CloudFlareTunnelProvider) ApplyChanges(ctx context.Context, changes *pl
 		if err != nil {
 			return err
 		}
-		recordID := p.getRecordID(records, cloudflare.DNSRecord{
-			Name:    endpoint.DNSName,
-			Type:    "CNAME",
-			Content: endpoint.Targets[0],
+
+		dnsDeleteParams = append(dnsDeleteParams, dnsDeleteParam{
+			ZoneID: zoneID,
+			recordID: p.getRecordID(records, cloudflare.DNSRecord{
+				Name: deleteEndpoint.DNSName,
+				Type: endpoint.RecordTypeCNAME,
+			}),
 		})
-		err = p.Client.DeleteDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), recordID)
-		if err != nil {
-			fmt.Printf("failed to delete dns record: %v\n", err)
-			continue
-		}
-		log.Info("successfully delete record: ", endpoint.DNSName)
 	}
 
-	for _, v := range ingresses {
-		//fmt.Println(v.Hostname, ":", v.Service)
-		param.Config.Ingress = append(param.Config.Ingress, v)
-	}
-	param.Config.Ingress = append(param.Config.Ingress, catchAll)
+	tunnelConfigParam := cloudflare.TunnelConfigurationParams{TunnelID: p.tunnelId, Config: oldConfigResult.Config}
+
+	tunnelConfigParam.Config.Ingress = ingressConfigs.Get()
+	tunnelConfigParam.Config.Ingress = append(tunnelConfigParam.Config.Ingress, catchAll)
 
 	if p.DryRun {
 		return nil
 	}
 
-	_, err = p.Client.UpdateTunnelConfiguration(ctx, cloudflare.AccountIdentifier(p.accountId), param)
+	_, err = p.Client.UpdateTunnelConfiguration(ctx, cloudflare.AccountIdentifier(p.accountId), tunnelConfigParam)
 	if err != nil {
 		return fmt.Errorf("failed to update tunnel configs: %v", err)
 	}
 	log.Info("successfully update tunnel config")
+
+	for _, createParam := range dnsCreateParams {
+		zoneID := createParam.ZoneID
+		_, err := p.Client.CreateDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), createParam)
+		if err != nil {
+			fmt.Printf("failed to create dns record: %v\n", err)
+			continue
+		}
+		log.Info("successfully create record: ", createParam.Name)
+	}
+
+	for _, updateParam := range dnsUpdateParams {
+		zoneID := updateParam.ZoneID
+		_, err := p.Client.UpdateDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), updateParam.cfup)
+		if err != nil {
+			fmt.Printf("failed to update dns record: %v\n", err)
+			continue
+		}
+		log.Info("successfully update record: ", updateParam.cfup.Name)
+	}
+
+	for _, deleteParam := range dnsDeleteParams {
+		zoneID := deleteParam.ZoneID
+		err = p.Client.DeleteDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), deleteParam.recordID)
+		if err != nil {
+			fmt.Printf("failed to delete dns record: %v\n", err)
+			continue
+		}
+		log.Info("successfully delete record: ", deleteParam.recordID)
+	}
+
 	return nil
 }
 
@@ -294,7 +343,7 @@ func (p CloudFlareTunnelProvider) updateZoneIdMapper(ctx context.Context) error 
 
 func (p *CloudFlareTunnelProvider) getRecordID(records []cloudflare.DNSRecord, record cloudflare.DNSRecord) string {
 	for _, zoneRecord := range records {
-		if zoneRecord.Name == record.Name && zoneRecord.Type == record.Type && zoneRecord.Content == record.Content {
+		if zoneRecord.Name == record.Name && zoneRecord.Type == record.Type {
 			return zoneRecord.ID
 		}
 	}
