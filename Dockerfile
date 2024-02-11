@@ -14,4 +14,4 @@ WORKDIR /app
 
 COPY --from=builder /build/main ./
 
-CMD ["./main"]
+ENTRYPOINT ["./main"]
