@@ -1,4 +1,4 @@
-# Set up ExternalDNS for Azure Private DNS
+# Azure Private DNS
 
 This tutorial describes how to set up ExternalDNS for managing records in Azure Private DNS.
 
@@ -98,6 +98,10 @@ $ az role assignment create --role "Reader" --assignee <appId GUID> --scope <res
 $ az role assignment create --role "Private DNS Zone Contributor" --assignee <appId GUID> --scope <dns zone resource id>
 ```
 
+## Throttling
+
+When the ExternalDNS managed zones list doesn't change frequently, one can set `--azure-zones-cache-duration` (zones list cache time-to-live). The zones list cache is disabled by default, with a value of 0s.
+
 ## Deploy ExternalDNS
 Configure `kubectl` to be able to communicate and authenticate with your cluster.
 This is per default done through the file `~/.kube/config`.
@@ -130,7 +134,7 @@ spec:
     spec:
       containers:
       - name: externaldns
-        image: registry.k8s.io/external-dns/external-dns:v0.14.0
+        image: registry.k8s.io/external-dns/external-dns:v0.15.0
         args:
         - --source=service
         - --source=ingress
@@ -201,7 +205,7 @@ spec:
       serviceAccountName: externaldns
       containers:
       - name: externaldns
-        image: registry.k8s.io/external-dns/external-dns:v0.14.0
+        image: registry.k8s.io/external-dns/external-dns:v0.15.0
         args:
         - --source=service
         - --source=ingress
@@ -272,7 +276,7 @@ spec:
       serviceAccountName: externaldns
       containers:
       - name: externaldns
-        image: registry.k8s.io/external-dns/external-dns:v0.14.0
+        image: registry.k8s.io/external-dns/external-dns:v0.15.0
         args:
         - --source=service
         - --source=ingress
@@ -330,12 +334,12 @@ Apply the following manifest to create a service of type `LoadBalancer`. This wi
 ---
 apiVersion: v1
 kind: Service
-annotations:
-  service.beta.kubernetes.io/azure-load-balancer-internal: "true"
-  external-dns.alpha.kubernetes.io/hostname: server.example.com
-  external-dns.alpha.kubernetes.io/internal-hostname: server-clusterip.example.com
 metadata:
   name: nginx-svc
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    external-dns.alpha.kubernetes.io/hostname: server.example.com
+    external-dns.alpha.kubernetes.io/internal-hostname: server-clusterip.example.com
 spec:
   ports:
     - port: 80
@@ -430,7 +434,13 @@ spec:
         pathType: Prefix
 ```
 
-When using ExternalDNS with ingress objects it will automatically create DNS records based on host names specified in ingress objects that match the domain-filter argument in the externaldns deployment manifest. When those host names are removed or renamed the corresponding DNS records are also altered.
+When you use ExternalDNS with Ingress resources, it automatically creates DNS records based on the hostnames listed in those Ingress objects.
+Those hostnames must match the filters that you defined (if any):
+
+- By default, `--domain-filter` filters Azure Private DNS zone.
+- If you use `--domain-filter` together with `--zone-name-filter`, the behavior changes: `--domain-filter` then filters Ingress domains, not the Azure Private DNS zone name.
+
+When those hostnames are removed or renamed the corresponding DNS records are also altered.
 
 Create the deployment, service and ingress object:
 

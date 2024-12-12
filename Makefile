@@ -33,11 +33,7 @@ controller-gen:
 ifeq (, $(shell which controller-gen))
 	@{ \
 	set -e ;\
-	CONTROLLER_GEN_TMP_DIR=$$(mktemp -d) ;\
-	cd $$CONTROLLER_GEN_TMP_DIR ;\
-	go mod init tmp ;\
-	go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.5.0 ;\
-	rm -rf $$CONTROLLER_GEN_TMP_DIR ;\
+	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0 ;\
 	}
 CONTROLLER_GEN=$(GOBIN)/controller-gen
 else
@@ -45,7 +41,7 @@ CONTROLLER_GEN=$(shell which controller-gen)
 endif
 
 golangci-lint:
-	@command -v golangci-lint > /dev/null || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
+	@command -v golangci-lint > /dev/null || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.60.3
 
 # Run the golangci-lint tool
 .PHONY: go-lint
@@ -64,9 +60,13 @@ licensecheck:
                exit 1; \
        fi
 
+# Requires to install spectral. See https://github.com/stoplightio/spectral
+oas-lint:
+	spectral lint api/*.yaml
+
 # Run all the linters
 .PHONY: lint
-lint: licensecheck go-lint
+lint: licensecheck go-lint oas-lint
 
 # generates CRD using controller-gen
 .PHONY: crd

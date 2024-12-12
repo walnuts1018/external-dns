@@ -16,29 +16,44 @@ Providers implementing the HTTP API have to keep in sync with changes to the JSO
 
 The following table represents the methods to implement mapped to their HTTP method and route.
 
-| Provider method | HTTP Method | Route            |
-| ---             | ---         | ---              |
-| Records         | GET         | /records         |
-| AdjustEndpoints | POST        | /adjustendpoints |
-| ApplyChanges    | POST        | /records         |
-| K8s probe       | GET         | /healthz         |
+
+### Provider endpoints
+
+| Provider method | HTTP Method | Route            | Description                              |
+| --------------- | ----------- | ---------------- | ---------------------------------------- |
+| Negotiate       | GET         | /                | Negotiate `DomainFilter`                 |
+| Records         | GET         | /records         | Get records                              |
+| AdjustEndpoints | POST        | /adjustendpoints | Provider specific adjustments of records |
+| ApplyChanges    | POST        | /records         | Apply record                             |
+
+OpenAPI spec is [here](../../api/webhook.yaml).
 
 ExternalDNS will also make requests to the `/` endpoint for negotiation and for deserialization of the `DomainFilter`.
 
 The server needs to respond to those requests by reading the `Accept` header and responding with a corresponding `Content-Type` header specifying the supported media type format and version.
 
-The default recommended port is 8888, and should listen only on localhost (ie: only accessible for k8s probes and external-dns).
+The default recommended port for the provider endpoints is `8888`, and should listen only on `localhost` (ie: only accessible for external-dns).
 
 **NOTE**: only `5xx` responses will be retried and only `20x` will be considered as successful. All status codes different from those will be considered a failure on ExternalDNS's side.
 
+### Exposed endpoints
 
-## Metrics support
+| Provider method | HTTP Method | Route    | Description                                                                                  |
+| --------------- | ----------- | -------- | -------------------------------------------------------------------------------------------- |
+| K8s probe       | GET         | /healthz | Used by `livenessProbe` and `readinessProbe`                                                 |
+| Open Metrics    | GET         | /metrics | Optional endpoint to expose [Open Metrics](https://github.com/OpenObservability/OpenMetrics) |
 
-The metrics should listen ":8080" on `/metrics` following [Open Metrics](https://github.com/OpenObservability/OpenMetrics) format.
+The default recommended port for the exposed endpoints is `8080`, and it should be bound to all interfaces (`0.0.0.0`)
+
+## Custom Annotations
+
+The Webhook provider supports custom annotations for DNS records. This feature allows users to define additional configuration options for DNS records managed by the Webhook provider. Custom annotations are defined using the annotation format `external-dns.alpha.kubernetes.io/webhook-<custom-annotation>`.
+
+Custom annotations can be used to influence DNS record creation and updates. Providers implementing the Webhook API should document the custom annotations they support and how they affect DNS record management.
 
 ## Provider registry
 
-To simplify the discovery of providers, we will accept pull requests that will add links to providers in the [README](../../README.md) file. This list will only serve the purpose of simplifying finding providers and will not constitute an official endorsement of any of the externally implemented providers unless otherwise stated.
+To simplify the discovery of providers, we will accept pull requests that will add links to providers in this documentation. This list will only serve the purpose of simplifying finding providers and will not constitute an official endorsement of any of the externally implemented providers unless otherwise stated.
 
 ## Run an ExternalDNS in-tree provider as a webhook.
 

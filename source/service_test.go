@@ -173,6 +173,11 @@ func testServiceSourceNewServiceSource(t *testing.T) {
 
 // testServiceSourceEndpoints tests that various services generate the correct endpoints.
 func testServiceSourceEndpoints(t *testing.T) {
+	exampleDotComIP4, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip4", "example.com")
+	assert.NoError(t, err)
+	exampleDotComIP6, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip6", "example.com")
+	assert.NoError(t, err)
+
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -406,8 +411,8 @@ func testServiceSourceEndpoints(t *testing.T) {
 			serviceTypesFilter:          []string{},
 			resolveLoadBalancerHostname: true,
 			expected: []*endpoint.Endpoint{
-				{DNSName: "foo.example.org", RecordType: endpoint.RecordTypeA, Targets: endpoint.Targets{"93.184.216.34"}},
-				{DNSName: "foo.example.org", RecordType: endpoint.RecordTypeAAAA, Targets: endpoint.Targets{"2606:2800:220:1:248:1893:25c8:1946"}},
+				{DNSName: "foo.example.org", RecordType: endpoint.RecordTypeA, Targets: endpoint.Targets{exampleDotComIP4[0].String()}},
+				{DNSName: "foo.example.org", RecordType: endpoint.RecordTypeAAAA, Targets: endpoint.Targets{exampleDotComIP6[0].String()}},
 			},
 		},
 		{
@@ -1559,6 +1564,17 @@ func TestClusterIpServices(t *testing.T) {
 			clusterIP:     "4.5.6.7",
 			expected:      []*endpoint.Endpoint{},
 			labelSelector: "app=web-external",
+		},
+		{
+			title:        "invalid hostname does not generate endpoints",
+			svcNamespace: "testing",
+			svcName:      "foo",
+			svcType:      v1.ServiceTypeClusterIP,
+			annotations: map[string]string{
+				hostnameAnnotationKey: "this-is-an-exceedingly-long-label-that-external-dns-should-reject.example.org.",
+			},
+			clusterIP: "1.2.3.4",
+			expected:  []*endpoint.Endpoint{},
 		},
 	} {
 		tc := tc

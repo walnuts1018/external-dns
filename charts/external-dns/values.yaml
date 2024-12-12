@@ -2,6 +2,10 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+global:
+  # -- Global image pull secrets.
+  imagePullSecrets: []
+
 image:
   # -- Image repository for the `external-dns` container.
   repository: registry.k8s.io/external-dns/external-dns
@@ -53,6 +57,9 @@ rbac:
 # -- Annotations to add to the `Deployment`.
 deploymentAnnotations: {}
 
+# -- Extra containers to add to the `Deployment`.
+extraContainers: {}
+
 # -- [Deployment Strategy](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy).
 deploymentStrategy:
   type: Recreate
@@ -88,6 +95,9 @@ terminationGracePeriodSeconds:
 
 # -- (string) [DNS policy](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-policy) for the pod, if not set the default will be used.
 dnsPolicy:
+
+# -- (object) [DNS config](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-dns-config) for the pod, if not set the default will be used.
+dnsConfig:
 
 # -- [Init containers](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/) to add to the `Pod` definition.
 initContainers: []
@@ -213,8 +223,17 @@ txtPrefix:
 # Mutually exclusive with `txtPrefix`.
 txtSuffix:
 
-## - Limit possible target zones by domain suffixes.
+# -- Limit possible target zones by domain suffixes.
 domainFilters: []
+
+# -- Intentionally exclude domains from being managed.
+excludeDomains: []
+
+# -- (string) Filter resources queried for endpoints by label selector
+labelFilter:
+
+# -- Record types to manage (default: A, AAAA, CNAME)
+managedRecordTypes: []
 
 provider:
   # -- _ExternalDNS_ provider name; for the available providers and how to configure them see [README](https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/README.md#providers).
@@ -260,6 +279,9 @@ provider:
       timeoutSeconds: 5
       failureThreshold: 6
       successThreshold: 1
+    service:
+      # -- Webhook exposed HTTP port for the service.
+      port: 8080
     # -- Optional [Service Monitor](https://prometheus-operator.dev/docs/operator/design/#servicemonitor) configuration for the `webhook` container.
     # @default -- See _values.yaml_
     serviceMonitor:

@@ -240,6 +240,10 @@ func (p *Plan) Calculate() *Plan {
 
 				if ownersMatch {
 					changes.Create = append(changes.Create, creates...)
+				} else if log.GetLevel() == log.DebugLevel {
+					for _, current := range row.current {
+						log.Debugf(`Skipping endpoint %v because owner id does not match for one or more items to create, found: "%s", required: "%s"`, current, current.Labels[endpoint.OwnerLabelKey], p.OwnerID)
+					}
 				}
 			}
 		}
@@ -252,6 +256,7 @@ func (p *Plan) Calculate() *Plan {
 	// filter out updates this external dns does not have ownership claim over
 	if p.OwnerID != "" {
 		changes.Delete = endpoint.FilterEndpointsByOwnerID(p.OwnerID, changes.Delete)
+		changes.Delete = endpoint.RemoveDuplicates(changes.Delete)
 		changes.UpdateOld = endpoint.FilterEndpointsByOwnerID(p.OwnerID, changes.UpdateOld)
 		changes.UpdateNew = endpoint.FilterEndpointsByOwnerID(p.OwnerID, changes.UpdateNew)
 	}

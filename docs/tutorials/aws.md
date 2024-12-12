@@ -1,6 +1,6 @@
-# Setting up ExternalDNS for Services on AWS
+# AWS
 
-This tutorial describes how to setup ExternalDNS for usage within a Kubernetes cluster on AWS. Make sure to use **>=0.11.0** version of ExternalDNS for this tutorial
+This tutorial describes how to setup ExternalDNS for usage within a Kubernetes cluster on AWS. Make sure to use **>=0.15.0** version of ExternalDNS for this tutorial
 
 ## IAM Policy
 
@@ -211,10 +211,12 @@ aws iam attach-user-policy --user-name "externaldns" --policy-arn $POLICY_ARN
 
 ```bash
 SECRET_ACCESS_KEY=$(aws iam create-access-key --user-name "externaldns")
-cat <<-EOF > /local/path/to/credentials
+ACCESS_KEY_ID=$(echo $SECRET_ACCESS_KEY | jq -r '.AccessKey.AccessKeyId')
+
+cat <<-EOF > credentials
 
 [default]
-aws_access_key_id = $(echo $SECRET_ACCESS_KEY | jq -r '.AccessKey.AccessKeyId')
+aws_access_key_id = $(echo $ACCESS_KEY_ID)
 aws_secret_access_key = $(echo $SECRET_ACCESS_KEY | jq -r '.AccessKey.SecretAccessKey')
 EOF
 ```
@@ -229,6 +231,14 @@ kubectl create secret generic external-dns \
 #### Deploy ExternalDNS using static credentials
 
 Follow the steps under [Deploy ExternalDNS](#deploy-externaldns) using either RBAC or non-RBAC.  Make sure to uncomment the section that mounts volumes, so that the credentials can be mounted.
+
+> [!TIP]
+> By default ExternalDNS takes the profile named `default` from the credentials file. If you want to use a different 
+> profile, you can set the environment variable `EXTERNAL_DNS_AWS_PROFILE` to the desired profile name or use the 
+> `--aws-profile` command line argument. It is even possible to use more than one profile at ones, separated by space in
+> the environment variable `EXTERNAL_DNS_AWS_PROFILE` or by using `--aws-profile` multiple times. In this case 
+> ExternalDNS looks for the hosted zones in all profiles and keeps maintaining a mapping table between zone and profile 
+> in order to be able to modify the zones in the correct profile.
 
 ### IAM Roles for Service Accounts
 
@@ -390,7 +400,25 @@ kubectl get namespaces | grep -q $EXTERNALDNS_NS || \
   kubectl create namespace $EXTERNALDNS_NS
 ```
 
-### Manifest (for clusters without RBAC enabled)
+## Using Helm (with OIDC)
+
+Create a values.yaml file to configure ExternalDNS:
+
+```shell
+provider:
+  name: aws
+env:
+  - name: AWS_DEFAULT_REGION
+    value: us-east-1 # change to region where EKS is installed
+```
+
+Finally, install the ExternalDNS chart with Helm using the configuration specified in your values.yaml file:
+
+```shell
+helm upgrade --install external-dns external-dns/external-dns --values values.yaml
+```
+
+### When using clusters without RBAC enabled
 
 Save the following below as `externaldns-no-rbac.yaml`.
 
@@ -414,7 +442,7 @@ spec:
     spec:
       containers:
         - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.14.0
+          image: registry.k8s.io/external-dns/external-dns:v0.15.0
           args:
             - --source=service
             - --source=ingress
@@ -447,99 +475,40 @@ kubectl create --filename externaldns-no-rbac.yaml \
   --namespace ${EXTERNALDNS_NS:-"default"}
 ```
 
-### Manifest (for clusters with RBAC enabled)
+### When using clusters with RBAC enabled
 
-Save the following below as `externaldns-with-rbac.yaml`.
+If you're using EKS, you can update the `values.yaml` file you created earlier to include the annotations to link the Role ARN you created before.
 
 ```yaml
-# comment out sa if it was previously created
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: external-dns
-  labels:
-    app.kubernetes.io/name: external-dns
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: external-dns
-  labels:
-    app.kubernetes.io/name: external-dns
-rules:
-  - apiGroups: [""]
-    resources: ["services","endpoints","pods","nodes"]
-    verbs: ["get","watch","list"]
-  - apiGroups: ["extensions","networking.k8s.io"]
-    resources: ["ingresses"]
-    verbs: ["get","watch","list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: external-dns-viewer
-  labels:
-    app.kubernetes.io/name: external-dns
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: external-dns
-subjects:
-  - kind: ServiceAccount
-    name: external-dns
-    namespace: default # change to desired namespace: externaldns, kube-addons
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: external-dns
-  labels:
-    app.kubernetes.io/name: external-dns
-spec:
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: external-dns
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: external-dns
-    spec:
-      serviceAccountName: external-dns
-      containers:
-        - name: external-dns
-          image: registry.k8s.io/external-dns/external-dns:v0.14.0
-          args:
-            - --source=service
-            - --source=ingress
-            - --domain-filter=example.com # will make ExternalDNS see only the hosted zones matching provided domain, omit to process all available hosted zones
-            - --provider=aws
-            - --policy=upsert-only # would prevent ExternalDNS from deleting any records, omit to enable full synchronization
-            - --aws-zone-type=public # only look at public hosted zones (valid values are public, private or no value for both)
-            - --registry=txt
-            - --txt-owner-id=external-dns
-          env:
-            - name: AWS_DEFAULT_REGION
-              value: us-east-1 # change to region where EKS is installed
-     # # Uncommend below if using static credentials
-     #        - name: AWS_SHARED_CREDENTIALS_FILE
-     #          value: /.aws/credentials
-     #      volumeMounts:
-     #        - name: aws-credentials
-     #          mountPath: /.aws
-     #          readOnly: true
-     #  volumes:
-     #    - name: aws-credentials
-     #      secret:
-     #        secretName: external-dns
+provider:
+  name: aws
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::${ACCOUNT_ID}:role/${EXTERNALDNS_ROLE_NAME:-"external-dns"}
 ```
 
-When ready deploy:
+If you need to provide credentials directly using a secret (ie. You're not using EKS), you can change the `values.yaml` file to include volume and volume mounts.
 
-```bash
-kubectl create --filename externaldns-with-rbac.yaml \
-  --namespace ${EXTERNALDNS_NS:-"default"}
+```yaml
+provider:
+  name: aws
+env:
+  - name: AWS_SHARED_CREDENTIALS_FILE
+    value: /etc/aws/credentials/my_credentials
+extraVolumes:
+  - name: aws-credentials
+    secret:
+      secretName: external-dns # In this example, the secret will have the data stored in a key named `my_credentials`
+extraVolumeMounts:
+  - name: aws-credentials
+    mountPath: /etc/aws/credentials
+    readOnly: true
+```
+
+When ready, update your Helm installation:
+
+```shell
+helm upgrade --install external-dns external-dns/external-dns --values values.yaml
 ```
 
 ## Arguments
@@ -556,7 +525,7 @@ Annotations which are specific to AWS.
 
 ### alias
 
-`external-dns.alpha.kubernetes.io/alias` if set to `true` on an ingress, it will create an ALIAS record when the target is an ALIAS as well. To make the target an alias, the ingress needs to be configured correctly as described in [the docs](./nginx-ingress.md#with-a-separate-tcp-load-balancer). In particular, the argument `--publish-service=default/nginx-ingress-controller` has to be set on the `nginx-ingress-controller` container. If one uses the `nginx-ingress` Helm chart, this flag can be set with the `controller.publishService.enabled` configuration option.
+`external-dns.alpha.kubernetes.io/alias` if set to `true` on an ingress, it will create an ALIAS record when the target is an ALIAS as well. To make the target an alias, the ingress needs to be configured correctly as described in [the docs](./gke-nginx.md#with-a-separate-tcp-load-balancer). In particular, the argument `--publish-service=default/nginx-ingress-controller` has to be set on the `nginx-ingress-controller` container. If one uses the `nginx-ingress` Helm chart, this flag can be set with the `controller.publishService.enabled` configuration option.
 
 ### target-hosted-zone
 
@@ -850,7 +819,7 @@ Note: ExternalDNS does not support creating healthchecks, and assumes that `<hea
 
 When creating ALIAS type records in Route53 it is required that external-dns be aware of the canonical hosted zone in which
 the specified hostname is created. External-dns is able to automatically identify the canonical hosted zone for many
-hostnames based upon known hostname suffixes which are defined in [aws.go](../../provider/aws/aws.go). If a hostname
+hostnames based upon known hostname suffixes which are defined in [aws.go](https://github.com/kubernetes-sigs/external-dns/blob/master/provider/aws/aws.go#L65). If a hostname
 does not have a known suffix then the suffix can be added into `aws.go` or the [target-hosted-zone annotation](#target-hosted-zone)
 can be used to manually define the ID of the canonical hosted zone.
 
@@ -887,6 +856,10 @@ env:
       key: {{ YOUR_SECRET_KEY }}
 ```
 
+## DynamoDB Registry
+
+The DynamoDB Registry can be used to store dns records metadata. See the [DynamoDB Registry Tutorial](../registry/dynamodb.md) for more information.
+
 ## Clean up
 
 Make sure to delete all Service objects before terminating the cluster so all load balancers get cleaned up correctly.
@@ -910,13 +883,17 @@ eksctl delete cluster --name $EKS_CLUSTER_NAME --region $EKS_CLUSTER_REGION
 Give ExternalDNS some time to clean up the DNS records for you. Then delete the hosted zone if you created one for the testing purpose.
 
 ```bash
-aws route53 delete-hosted-zone --id $NODE_ID # e.g /hostedzone/ZEWFWZ4R16P7IB
+aws route53 delete-hosted-zone --id $ZONE_ID # e.g /hostedzone/ZEWFWZ4R16P7IB
 ```
 
 If IAM user credentials were used, you can remove the user with:
 
 ```bash
 aws iam detach-user-policy --user-name "externaldns" --policy-arn $POLICY_ARN
+
+# If static credentials were used
+aws iam delete-access-key --user-name "externaldns" --access-key-id $ACCESS_KEY_ID
+
 aws iam delete-user --user-name "externaldns"
 ```
 
@@ -939,8 +916,11 @@ Route53 has a [5 API requests per second per account hard quota](https://docs.aw
 Running several fast polling ExternalDNS instances in a given account can easily hit that limit. Some ways to reduce the request rate include:
 * Reduce the polling loop's synchronization interval at the possible cost of slower change propagation (but see `--events` below to reduce the impact).
   * `--interval=5m` (default `1m`)
-* Trigger the polling loop on changes to K8s objects, rather than only at `interval`, to have responsive updates with long poll intervals
+* Enable a Cache to store the zone records list. It comes with a cost: slower propagation when the zone gets modified from other sources such as the AWS console, terraform, cloudformation or anything similar.
+  * `--provider-cache-time=15m` (default `0m`)
+* Trigger the polling loop on changes to K8s objects, rather than only at `interval` and ensure a minimum of time between events, to have responsive updates with long poll intervals
   * `--events`
+  * `--min-event-sync-interval=5m` (default `5s`)
 * Limit the [sources watched](https://github.com/kubernetes-sigs/external-dns/blob/master/pkg/apis/externaldns/types.go#L364) when the `--events` flag is specified to specific types, namespaces, labels, or annotations
   * `--source=ingress --source=service` - specify multiple times for multiple sources
   * `--namespace=my-app`
@@ -971,7 +951,7 @@ A simple way to implement randomised startup is with an init container:
     spec:
       initContainers:
       - name: init-jitter
-        image: registry.k8s.io/external-dns/external-dns:v0.14.0
+        image: registry.k8s.io/external-dns/external-dns:v0.15.0
         command:
         - /bin/sh
         - -c

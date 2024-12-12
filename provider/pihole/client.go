@@ -33,6 +33,7 @@ import (
 	"golang.org/x/net/html"
 
 	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/provider"
 )
 
 // piholeAPI declares the "API" actions performed against the Pihole server.
@@ -145,12 +146,23 @@ func (p *piholeClient) listRecords(ctx context.Context, rtype string) ([]*endpoi
 	if !ok {
 		return out, nil
 	}
+loop:
 	for _, rec := range data {
 		name := rec[0]
 		target := rec[1]
 		if !p.cfg.DomainFilter.Match(name) {
 			log.Debugf("Skipping %s that does not match domain filter", name)
 			continue
+		}
+		switch rtype {
+		case endpoint.RecordTypeA:
+			if strings.Contains(target, ":") {
+				continue loop
+			}
+		case endpoint.RecordTypeAAAA:
+			if strings.Contains(target, ".") {
+				continue loop
+			}
 		}
 		out = append(out, &endpoint.Endpoint{
 			DNSName:    name,
@@ -180,7 +192,7 @@ func (p *piholeClient) cnameRecordsScript() string {
 
 func (p *piholeClient) urlForRecordType(rtype string) (string, error) {
 	switch rtype {
-	case endpoint.RecordTypeA:
+	case endpoint.RecordTypeA, endpoint.RecordTypeAAAA:
 		return p.aRecordsScript(), nil
 	case endpoint.RecordTypeCNAME:
 		return p.cnameRecordsScript(), nil
@@ -213,6 +225,9 @@ func (p *piholeClient) apply(ctx context.Context, action string, ep *endpoint.En
 	log.Infof("%s %s IN %s -> %s", action, ep.DNSName, ep.RecordType, ep.Targets[0])
 
 	form := p.newDNSActionForm(action, ep)
+	if strings.Contains(ep.DNSName, "*") {
+		return provider.NewSoftError(errors.New("UNSUPPORTED: Pihole DNS names cannot return wildcard"))
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
@@ -287,7 +302,7 @@ func (p *piholeClient) newDNSActionForm(action string, ep *endpoint.Endpoint) *u
 	form.Add("action", action)
 	form.Add("domain", ep.DNSName)
 	switch ep.RecordType {
-	case endpoint.RecordTypeA:
+	case endpoint.RecordTypeA, endpoint.RecordTypeAAAA:
 		form.Add("ip", ep.Targets[0])
 	case endpoint.RecordTypeCNAME:
 		form.Add("target", ep.Targets[0])

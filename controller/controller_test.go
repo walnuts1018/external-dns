@@ -57,7 +57,7 @@ type errorMockProvider struct {
 	mockProvider
 }
 
-func (p *filteredMockProvider) GetDomainFilter() endpoint.DomainFilter {
+func (p *filteredMockProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
 }
 
@@ -131,12 +131,9 @@ func newMockProvider(endpoints []*endpoint.Endpoint, changes *plan.Changes) prov
 	return dnsProvider
 }
 
-// TestRunOnce tests that RunOnce correctly orchestrates the different components.
-func TestRunOnce(t *testing.T) {
+func getTestSource() *testutils.MockSource {
 	// Fake some desired endpoints coming from our source.
 	source := new(testutils.MockSource)
-	cfg := externaldns.NewConfig()
-	cfg.ManagedDNSRecordTypes = []string{endpoint.RecordTypeA, endpoint.RecordTypeAAAA, endpoint.RecordTypeCNAME}
 	source.On("Endpoints").Return([]*endpoint.Endpoint{
 		{
 			DNSName:    "create-record",
@@ -160,8 +157,18 @@ func TestRunOnce(t *testing.T) {
 		},
 	}, nil)
 
+	return source
+}
+
+func getTestConfig() *externaldns.Config {
+	cfg := externaldns.NewConfig()
+	cfg.ManagedDNSRecordTypes = []string{endpoint.RecordTypeA, endpoint.RecordTypeAAAA, endpoint.RecordTypeCNAME}
+	return cfg
+}
+
+func getTestProvider() provider.Provider {
 	// Fake some existing records in our DNS provider and validate some desired changes.
-	provider := newMockProvider(
+	return newMockProvider(
 		[]*endpoint.Endpoint{
 			{
 				DNSName:    "update-record",
@@ -203,6 +210,13 @@ func TestRunOnce(t *testing.T) {
 			},
 		},
 	)
+}
+
+// TestRunOnce tests that RunOnce correctly orchestrates the different components.
+func TestRunOnce(t *testing.T) {
+	source := getTestSource()
+	cfg := getTestConfig()
+	provider := getTestProvider()
 
 	r, err := registry.NewNoopRegistry(provider)
 	require.NoError(t, err)
@@ -224,21 +238,57 @@ func TestRunOnce(t *testing.T) {
 	assert.Equal(t, math.Float64bits(1), valueFromMetric(verifiedAAAARecords))
 }
 
+// TestRun tests that Run correctly starts and stops
+func TestRun(t *testing.T) {
+	source := getTestSource()
+	cfg := getTestConfig()
+	provider := getTestProvider()
+
+	r, err := registry.NewNoopRegistry(provider)
+	require.NoError(t, err)
+
+	// Run our controller once to trigger the validation.
+	ctrl := &Controller{
+		Source:             source,
+		Registry:           r,
+		Policy:             &plan.SyncPolicy{},
+		ManagedRecordTypes: cfg.ManagedDNSRecordTypes,
+	}
+	ctrl.nextRunAt = time.Now().Add(-time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		ctrl.Run(ctx)
+		close(stopped)
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	cancel() // start shutdown
+	<-stopped
+
+	// Validate that the mock source was called.
+	source.AssertExpectations(t)
+	// check the verified records
+	assert.Equal(t, math.Float64bits(1), valueFromMetric(verifiedARecords))
+	assert.Equal(t, math.Float64bits(1), valueFromMetric(verifiedAAAARecords))
+}
+
 func valueFromMetric(metric prometheus.Gauge) uint64 {
 	ref := reflect.ValueOf(metric)
 	return reflect.Indirect(ref).FieldByName("valBits").Uint()
 }
 
 func TestShouldRunOnce(t *testing.T) {
-	ctrl := &Controller{Interval: 10 * time.Minute, MinEventSyncInterval: 5 * time.Second}
+	ctrl := &Controller{Interval: 10 * time.Minute, MinEventSyncInterval: 15 * time.Second}
 
 	now := time.Now()
 
 	// First run of Run loop should execute RunOnce
 	assert.True(t, ctrl.ShouldRunOnce(now))
+	assert.Equal(t, now.Add(10*time.Minute), ctrl.nextRunAt)
 
 	// Second run should not
 	assert.False(t, ctrl.ShouldRunOnce(now))
+	ctrl.lastRunAt = now
 
 	now = now.Add(10 * time.Second)
 	// Changes happen in ingresses or services
@@ -268,12 +318,17 @@ func TestShouldRunOnce(t *testing.T) {
 	assert.False(t, ctrl.ShouldRunOnce(now))
 
 	// Multiple ingresses or services changes, closer than MinInterval from each other
+	ctrl.lastRunAt = now
 	firstChangeTime := now
 	secondChangeTime := firstChangeTime.Add(time.Second)
 	// First change
 	ctrl.ScheduleRunOnce(firstChangeTime)
 	// Second change
 	ctrl.ScheduleRunOnce(secondChangeTime)
+
+	// Executions should be spaced by at least MinEventSyncInterval
+	assert.False(t, ctrl.ShouldRunOnce(now.Add(5*time.Second)))
+
 	// Should not postpone the reconciliation further than firstChangeTime + MinInterval
 	now = now.Add(ctrl.MinEventSyncInterval)
 	assert.True(t, ctrl.ShouldRunOnce(now))

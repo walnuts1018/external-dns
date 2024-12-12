@@ -61,29 +61,6 @@ func ValidateConfig(cfg *externaldns.Config) error {
 		}
 	}
 
-	// Infoblox provider specific validations
-	if cfg.Provider == "infoblox" {
-		if cfg.InfobloxGridHost == "" {
-			return errors.New("no Infoblox Grid Manager host specified")
-		}
-		if cfg.InfobloxWapiPassword == "" {
-			return errors.New("no Infoblox WAPI password specified")
-		}
-	}
-
-	if cfg.Provider == "dyn" {
-		if cfg.DynUsername == "" {
-			return errors.New("no Dyn username specified")
-		}
-		if cfg.DynCustomerName == "" {
-			return errors.New("no Dyn customer name specified")
-		}
-
-		if cfg.DynMinTTLSeconds < 0 {
-			return errors.New("TTL specified for Dyn is negative")
-		}
-	}
-
 	if cfg.Provider == "rfc2136" {
 		if cfg.RFC2136MinTTL < 0 {
 			return errors.New("TTL specified for rfc2136 is negative")
