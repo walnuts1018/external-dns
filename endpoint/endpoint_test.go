@@ -41,12 +41,44 @@ func TestTargetsSame(t *testing.T) {
 		{""},
 		{"1.2.3.4"},
 		{"8.8.8.8", "8.8.4.4"},
+		{"dd:dd::01", "::1", "::0001"},
 		{"example.org", "EXAMPLE.ORG"},
 	}
 
 	for _, d := range tests {
 		if d.Same(d) != true {
 			t.Errorf("%#v should equal %#v", d, d)
+		}
+	}
+}
+
+func TestSameSuccess(t *testing.T) {
+	tests := []struct {
+		a Targets
+		b Targets
+	}{
+		{
+			[]string{"::1"},
+			[]string{"::0001"},
+		},
+		{
+			[]string{"::1", "dd:dd::01"},
+			[]string{"dd:00dd::0001", "::0001"},
+		},
+
+		{
+			[]string{"::1", "dd:dd::01"},
+			[]string{"00dd:dd::0001", "::0001"},
+		},
+		{
+			[]string{"::1", "1.1.1.1", "2600.com", "3.3.3.3"},
+			[]string{"2600.com", "::0001", "3.3.3.3", "1.1.1.1"},
+		},
+	}
+
+	for _, d := range tests {
+		if d.a.Same(d.b) == false {
+			t.Errorf("%#v should equal %#v", d.a, d.b)
 		}
 	}
 }
@@ -68,6 +100,10 @@ func TestSameFailures(t *testing.T) {
 		}, {
 			[]string{"1.2.3.4", "4.3.2.1"},
 			[]string{"8.8.8.8", "8.8.4.4"},
+		},
+		{
+			[]string{"::1", "2600.com", "3.3.3.3"},
+			[]string{"2600.com", "3.3.3.3", "1.1.1.1"},
 		},
 	}
 
@@ -117,7 +153,7 @@ func TestIsLess(t *testing.T) {
 	}
 }
 
-func TestFilterEndpointsByOwnerID(t *testing.T) {
+func TestFilterEndpointsByOwnerIDWithRecordTypeA(t *testing.T) {
 	foo1 := &Endpoint{
 		DNSName:    "foo.com",
 		RecordType: RecordTypeA,
@@ -126,8 +162,8 @@ func TestFilterEndpointsByOwnerID(t *testing.T) {
 		},
 	}
 	foo2 := &Endpoint{
-		DNSName:    "foo.com",
-		RecordType: RecordTypeCNAME,
+		DNSName:    "foo2.com",
+		RecordType: RecordTypeA,
 		Labels: Labels{
 			OwnerLabelKey: "foo",
 		},
@@ -135,6 +171,62 @@ func TestFilterEndpointsByOwnerID(t *testing.T) {
 	bar := &Endpoint{
 		DNSName:    "foo.com",
 		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "bar",
+		},
+	}
+	type args struct {
+		ownerID string
+		eps     []*Endpoint
+	}
+	tests := []struct {
+		name string
+		args args
+		want []*Endpoint
+	}{
+		{
+			name: "filter values",
+			args: args{
+				ownerID: "foo",
+				eps: []*Endpoint{
+					foo1,
+					foo2,
+					bar,
+				},
+			},
+			want: []*Endpoint{
+				foo1,
+				foo2,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FilterEndpointsByOwnerID(tt.args.ownerID, tt.args.eps); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ApplyEndpointFilter() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterEndpointsByOwnerIDWithRecordTypeCNAME(t *testing.T) {
+	foo1 := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeCNAME,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	foo2 := &Endpoint{
+		DNSName:    "foo2.com",
+		RecordType: RecordTypeCNAME,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	bar := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeCNAME,
 		Labels: Labels{
 			OwnerLabelKey: "bar",
 		},
@@ -212,6 +304,139 @@ func TestIsOwnedBy(t *testing.T) {
 			}
 			if got := e.IsOwnedBy(tt.args.ownerID); got != tt.want {
 				t.Errorf("Endpoint.IsOwnedBy() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDuplicatedEndpointsWithSimpleZone(t *testing.T) {
+	foo1 := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	foo2 := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	bar := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "bar",
+		},
+	}
+
+	type args struct {
+		eps []*Endpoint
+	}
+	tests := []struct {
+		name string
+		args args
+		want []*Endpoint
+	}{
+		{
+			name: "filter values",
+			args: args{
+				eps: []*Endpoint{
+					foo1,
+					foo2,
+					bar,
+				},
+			},
+			want: []*Endpoint{
+				foo1,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RemoveDuplicates(tt.args.eps); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("RemoveDuplicates() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDuplicatedEndpointsWithOverlappingZones(t *testing.T) {
+	foo1 := &Endpoint{
+		DNSName:    "internal.foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	foo2 := &Endpoint{
+		DNSName:    "internal.foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	foo3 := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	foo4 := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "foo",
+		},
+	}
+	bar := &Endpoint{
+		DNSName:    "internal.foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "bar",
+		},
+	}
+	bar2 := &Endpoint{
+		DNSName:    "foo.com",
+		RecordType: RecordTypeA,
+		Labels: Labels{
+			OwnerLabelKey: "bar",
+		},
+	}
+
+	type args struct {
+		eps []*Endpoint
+	}
+	tests := []struct {
+		name string
+		args args
+		want []*Endpoint
+	}{
+		{
+			name: "filter values",
+			args: args{
+				eps: []*Endpoint{
+					foo1,
+					foo2,
+					foo3,
+					foo4,
+					bar,
+					bar2,
+				},
+			},
+			want: []*Endpoint{
+				foo1,
+				foo3,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RemoveDuplicates(tt.args.eps); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("RemoveDuplicates() = %v, want %v", got, tt.want)
 			}
 		})
 	}

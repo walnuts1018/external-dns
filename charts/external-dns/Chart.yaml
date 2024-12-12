@@ -2,8 +2,8 @@ apiVersion: v2
 name: external-dns
 description: ExternalDNS synchronizes exposed Kubernetes Services and Ingresses with DNS providers.
 type: application
-version: 1.14.3
-appVersion: 0.14.0
+version: 1.15.0
+appVersion: 0.15.0
 keywords:
   - kubernetes
   - externaldns
@@ -20,9 +20,13 @@ maintainers:
     email: steve.hipwell@gmail.com
 annotations:
   artifacthub.io/changes: |
+    - kind: changed
+      description: "Updated _ExternalDNS_ OCI image version to [v0.15.0](https://github.com/kubernetes-sigs/external-dns/releases/tag/v0.15.0)."
     - kind: fixed
-      description: "Fixed args for webhook deployment."
+      description: "Fixed `provider.webhook.resources` behavior to correctly leverage resource limits."
     - kind: fixed
-      description: "Fixed support for `gateway-grpcroute`, `gateway-tlsroute`, `gateway-tcproute` & `gateway-udproute`."
+      description: "Fixed `provider.webhook.imagePullPolicy` behavior to correctly leverage pull policy."
     - kind: fixed
-      description: "Fixed incorrect implementation for setting the `automountServiceAccountToken`."
+      description: "Fixed to add correct webhook metric port to `Service` and `ServiceMonitor`."
+    - kind: fixed
+      description: "Fixed to no longer require the unauthenticated webhook provider port to be exposed for health probes."

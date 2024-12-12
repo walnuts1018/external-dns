@@ -41,9 +41,10 @@ type config struct {
 	UseManagedIdentityExtension  bool   `json:"useManagedIdentityExtension" yaml:"useManagedIdentityExtension"`
 	UseWorkloadIdentityExtension bool   `json:"useWorkloadIdentityExtension" yaml:"useWorkloadIdentityExtension"`
 	UserAssignedIdentityID       string `json:"userAssignedIdentityID" yaml:"userAssignedIdentityID"`
+	ActiveDirectoryAuthorityHost string `json:"activeDirectoryAuthorityHost" yaml:"activeDirectoryAuthorityHost"`
 }
 
-func getConfig(configFile, resourceGroup, userAssignedIdentityClientID string) (*config, error) {
+func getConfig(configFile, subscriptionID, resourceGroup, userAssignedIdentityClientID, activeDirectoryAuthorityHost string) (*config, error) {
 	contents, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Azure config file '%s': %v", configFile, err)
@@ -53,7 +54,10 @@ func getConfig(configFile, resourceGroup, userAssignedIdentityClientID string) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Azure config file '%s': %v", configFile, err)
 	}
-
+	// If a subscription ID was given, override what was present in the config file
+	if subscriptionID != "" {
+		cfg.SubscriptionID = subscriptionID
+	}
 	// If a resource group was given, override what was present in the config file
 	if resourceGroup != "" {
 		cfg.ResourceGroup = resourceGroup
@@ -61,6 +65,10 @@ func getConfig(configFile, resourceGroup, userAssignedIdentityClientID string) (
 	// If userAssignedIdentityClientID is provided explicitly, override existing one in config file
 	if userAssignedIdentityClientID != "" {
 		cfg.UserAssignedIdentityID = userAssignedIdentityClientID
+	}
+	// If activeDirectoryAuthorityHost is provided explicitly, override existing one in config file
+	if activeDirectoryAuthorityHost != "" {
+		cfg.ActiveDirectoryAuthorityHost = activeDirectoryAuthorityHost
 	}
 	return cfg, nil
 }

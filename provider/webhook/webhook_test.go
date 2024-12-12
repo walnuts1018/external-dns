@@ -26,6 +26,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/plan"
+	"sigs.k8s.io/external-dns/provider"
 	webhookapi "sigs.k8s.io/external-dns/provider/webhook/api"
 )
 
@@ -99,10 +101,11 @@ func TestRecordsWithErrors(t *testing.T) {
 	}))
 	defer svr.Close()
 
-	provider, err := NewWebhookProvider(svr.URL)
+	p, err := NewWebhookProvider(svr.URL)
 	require.NoError(t, err)
-	_, err = provider.Records(context.Background())
+	_, err = p.Records(context.Background())
 	require.NotNil(t, err)
+	require.ErrorIs(t, err, provider.SoftError)
 }
 
 func TestApplyChanges(t *testing.T) {
@@ -122,15 +125,16 @@ func TestApplyChanges(t *testing.T) {
 	}))
 	defer svr.Close()
 
-	provider, err := NewWebhookProvider(svr.URL)
+	p, err := NewWebhookProvider(svr.URL)
 	require.NoError(t, err)
-	err = provider.ApplyChanges(context.TODO(), nil)
+	err = p.ApplyChanges(context.TODO(), nil)
 	require.NoError(t, err)
 
 	successfulApplyChanges = false
 
-	err = provider.ApplyChanges(context.TODO(), nil)
+	err = p.ApplyChanges(context.TODO(), nil)
 	require.NotNil(t, err)
+	require.ErrorIs(t, err, provider.SoftError)
 }
 
 func TestAdjustEndpoints(t *testing.T) {
@@ -198,7 +202,7 @@ func TestAdjustendpointsWithError(t *testing.T) {
 	}))
 	defer svr.Close()
 
-	provider, err := NewWebhookProvider(svr.URL)
+	p, err := NewWebhookProvider(svr.URL)
 	require.NoError(t, err)
 	endpoints := []*endpoint.Endpoint{
 		{
@@ -210,6 +214,58 @@ func TestAdjustendpointsWithError(t *testing.T) {
 			},
 		},
 	}
-	_, err = provider.AdjustEndpoints(endpoints)
+	_, err = p.AdjustEndpoints(endpoints)
 	require.Error(t, err)
+	require.ErrorIs(t, err, provider.SoftError)
+}
+
+// test apply changes with an endpoint with a provider specific property
+func TestApplyChangesWithProviderSpecificProperty(t *testing.T) {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set(webhookapi.ContentTypeHeader, webhookapi.MediaTypeFormatAndVersion)
+			w.Write([]byte(`{}`))
+			return
+		}
+		if r.URL.Path == "/records" {
+			w.Header().Set(webhookapi.ContentTypeHeader, webhookapi.MediaTypeFormatAndVersion)
+			// assert that the request contains the provider specific property
+			var changes plan.Changes
+			defer r.Body.Close()
+			b, err := io.ReadAll(r.Body)
+			require.Nil(t, err)
+			err = json.Unmarshal(b, &changes)
+			require.Nil(t, err)
+			require.Len(t, changes.Create, 1)
+			require.Len(t, changes.Create[0].ProviderSpecific, 1)
+			require.Equal(t, "prop1", changes.Create[0].ProviderSpecific[0].Name)
+			require.Equal(t, "value1", changes.Create[0].ProviderSpecific[0].Value)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}))
+	defer svr.Close()
+
+	p, err := NewWebhookProvider(svr.URL)
+	require.NoError(t, err)
+	e := &endpoint.Endpoint{
+		DNSName:    "test.example.com",
+		RecordTTL:  10,
+		RecordType: "A",
+		Targets: endpoint.Targets{
+			"",
+		},
+		ProviderSpecific: endpoint.ProviderSpecific{
+			endpoint.ProviderSpecificProperty{
+				Name:  "prop1",
+				Value: "value1",
+			},
+		},
+	}
+	err = p.ApplyChanges(context.TODO(), &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			e,
+		},
+	})
+	require.NoError(t, err)
 }

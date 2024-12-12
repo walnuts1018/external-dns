@@ -224,6 +224,13 @@ func getProviderSpecificAnnotations(annotations map[string]string) (endpoint.Pro
 				Name:  fmt.Sprintf("ibmcloud-%s", attr),
 				Value: v,
 			})
+		} else if strings.HasPrefix(k, "external-dns.alpha.kubernetes.io/webhook-") {
+			// Support for wildcard annotations for webhook providers
+			attr := strings.TrimPrefix(k, "external-dns.alpha.kubernetes.io/webhook-")
+			providerSpecificAnnotations = append(providerSpecificAnnotations, endpoint.ProviderSpecificProperty{
+				Name:  fmt.Sprintf("webhook/%s", attr),
+				Value: v,
+			})
 		}
 	}
 	return providerSpecificAnnotations, setIdentifier
@@ -284,52 +291,41 @@ func endpointsForHostname(hostname string, targets endpoint.Targets, ttl endpoin
 	}
 
 	if len(aTargets) > 0 {
-		epA := &endpoint.Endpoint{
-			DNSName:          strings.TrimSuffix(hostname, "."),
-			Targets:          aTargets,
-			RecordTTL:        ttl,
-			RecordType:       endpoint.RecordTypeA,
-			Labels:           endpoint.NewLabels(),
-			ProviderSpecific: providerSpecific,
-			SetIdentifier:    setIdentifier,
+		epA := endpoint.NewEndpointWithTTL(hostname, endpoint.RecordTypeA, ttl, aTargets...)
+		if epA != nil {
+			epA.ProviderSpecific = providerSpecific
+			epA.SetIdentifier = setIdentifier
+			if resource != "" {
+				epA.Labels[endpoint.ResourceLabelKey] = resource
+			}
+			endpoints = append(endpoints, epA)
 		}
-		if resource != "" {
-			epA.Labels[endpoint.ResourceLabelKey] = resource
-		}
-		endpoints = append(endpoints, epA)
 	}
 
 	if len(aaaaTargets) > 0 {
-		epAAAA := &endpoint.Endpoint{
-			DNSName:          strings.TrimSuffix(hostname, "."),
-			Targets:          aaaaTargets,
-			RecordTTL:        ttl,
-			RecordType:       endpoint.RecordTypeAAAA,
-			Labels:           endpoint.NewLabels(),
-			ProviderSpecific: providerSpecific,
-			SetIdentifier:    setIdentifier,
+		epAAAA := endpoint.NewEndpointWithTTL(hostname, endpoint.RecordTypeAAAA, ttl, aaaaTargets...)
+		if epAAAA != nil {
+			epAAAA.ProviderSpecific = providerSpecific
+			epAAAA.SetIdentifier = setIdentifier
+			if resource != "" {
+				epAAAA.Labels[endpoint.ResourceLabelKey] = resource
+			}
+			endpoints = append(endpoints, epAAAA)
 		}
-		if resource != "" {
-			epAAAA.Labels[endpoint.ResourceLabelKey] = resource
-		}
-		endpoints = append(endpoints, epAAAA)
 	}
 
 	if len(cnameTargets) > 0 {
-		epCNAME := &endpoint.Endpoint{
-			DNSName:          strings.TrimSuffix(hostname, "."),
-			Targets:          cnameTargets,
-			RecordTTL:        ttl,
-			RecordType:       endpoint.RecordTypeCNAME,
-			Labels:           endpoint.NewLabels(),
-			ProviderSpecific: providerSpecific,
-			SetIdentifier:    setIdentifier,
+		epCNAME := endpoint.NewEndpointWithTTL(hostname, endpoint.RecordTypeCNAME, ttl, cnameTargets...)
+		if epCNAME != nil {
+			epCNAME.ProviderSpecific = providerSpecific
+			epCNAME.SetIdentifier = setIdentifier
+			if resource != "" {
+				epCNAME.Labels[endpoint.ResourceLabelKey] = resource
+			}
+			endpoints = append(endpoints, epCNAME)
 		}
-		if resource != "" {
-			epCNAME.Labels[endpoint.ResourceLabelKey] = resource
-		}
-		endpoints = append(endpoints, epCNAME)
 	}
+
 	return endpoints
 }
 

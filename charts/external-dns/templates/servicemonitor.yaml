@@ -15,7 +15,7 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  jobLabel: {{ .Release.Name }}
+  jobLabel: app.kubernetes.io/instance
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace }}
@@ -51,7 +51,7 @@ spec:
       {{- end }}
     {{- if eq $providerName "webhook" }}
     {{- with .Values.provider.webhook.serviceMonitor }}
-    - port: webhook-metrics
+    - port: http-webhook
       path: /metrics
       {{- with .interval }}
       interval: {{ . }}
